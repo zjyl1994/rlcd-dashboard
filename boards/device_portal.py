@@ -178,6 +178,50 @@ def save_wifi_networks(networks):
     save_config(config)
 
 
+def _coerce_bool(value):
+    if isinstance(value, bool):
+        return value
+    value = _decode_text(value).strip().lower()
+    return value in ("1", "true", "yes", "on")
+
+
+def _normalize_mqtt_config(config):
+    data = dict(config or {})
+    host = _decode_text(data.get("host")).strip()
+    tls = _coerce_bool(data.get("tls"))
+
+    if host.startswith("mqtts://"):
+        host = host[8:]
+        tls = True
+    elif host.startswith("mqtt://"):
+        host = host[7:]
+
+    port = _coerce_int(data.get("port"))
+    if port is None or port <= 0 or port > 65535:
+        port = 8883 if tls else 1883
+
+    return {
+        "host": host,
+        "port": port,
+        "tls": tls,
+        "username": _decode_text(data.get("username")),
+        "password": _decode_text(data.get("password")),
+        "client_id": _decode_text(data.get("client_id")).strip(),
+        "keepalive": max(_coerce_int(data.get("keepalive"), 60) or 60, 15),
+    }
+
+
+def load_mqtt_config():
+    config = load_config()
+    return _normalize_mqtt_config(config.get("mqtt", {}))
+
+
+def save_mqtt_config(mqtt_config):
+    config = load_config()
+    config["mqtt"] = _normalize_mqtt_config(mqtt_config)
+    save_config(config)
+
+
 def get_timezone_offset_minutes(default=DEFAULT_TIMEZONE_OFFSET_MINUTES):
     config = load_config()
     try:
@@ -266,6 +310,13 @@ def _access_point():
 def is_boot_pressed():
     try:
         return board.init_boot().value() == 0
+    except Exception:
+        return False
+
+
+def is_key_pressed():
+    try:
+        return board.init_key().value() == 0
     except Exception:
         return False
 
@@ -1012,6 +1063,11 @@ class ControlPanelSession:
             _redirect(client)
             return
 
+        if path == "/mqtt/save":
+            self._save_mqtt(form)
+            _redirect(client)
+            return
+
         if path == "/portal/exit":
             self.message = "Returning to dashboard"
             self.error = ""
@@ -1079,6 +1135,25 @@ class ControlPanelSession:
             self.message = ""
             self.error = result.get("reason", "Time sync failed")
 
+    def _save_mqtt(self, form):
+        config = {
+            "host": form.get("host", ""),
+            "port": form.get("port", ""),
+            "tls": form.get("tls", ""),
+            "username": form.get("username", ""),
+            "password": form.get("password", ""),
+            "client_id": form.get("client_id", ""),
+            "keepalive": form.get("keepalive", "60"),
+        }
+        save_mqtt_config(config)
+
+        mqtt_config = load_mqtt_config()
+        self.error = ""
+        if mqtt_config["host"]:
+            self.message = "Saved MQTT config for {}:{}".format(mqtt_config["host"], mqtt_config["port"])
+        else:
+            self.message = "MQTT disabled"
+
     def _render_notice_page(self, title, text):
         return """<!DOCTYPE html>
 <html>
@@ -1127,6 +1202,7 @@ class ControlPanelSession:
         saved = load_wifi_networks()
         nearby = scan_networks()
         connection = current_connection()
+        mqtt_config = load_mqtt_config()
 
         alert = ""
         if self.error:
@@ -1177,6 +1253,10 @@ class ControlPanelSession:
             options.append("<option value=\"{}\"></option>".format(_html_escape(item["ssid"])))
 
         timezone_offset_minutes = get_timezone_offset_minutes()
+        mqtt_topic = "/rlcd/{}/message".format(self.device_name)
+        mqtt_tls_checked = " checked" if mqtt_config.get("tls") else ""
+        mqtt_keepalive = mqtt_config.get("keepalive") or 60
+        mqtt_port = mqtt_config.get("port") or (8883 if mqtt_config.get("tls") else 1883)
 
         return """<!DOCTYPE html>
 <html>
@@ -1200,6 +1280,7 @@ class ControlPanelSession:
     .ssid {{ font-weight: 700; }}
     form {{ margin: 0; }}
     input {{ width: 100%; box-sizing: border-box; padding: 10px 12px; margin: 8px 0 12px; border: 1px solid #334155; border-radius: 10px; background: #0f172a; color: #e2e8f0; }}
+    input[type=checkbox] {{ width: auto; margin-right: 8px; }}
     button {{ border: 0; border-radius: 10px; padding: 10px 14px; background: #2563eb; color: #ffffff; font-weight: 700; }}
     button.secondary {{ background: #374151; }}
     button.danger {{ background: #991b1b; }}
@@ -1262,6 +1343,27 @@ class ControlPanelSession:
         </div>
       </section>
       <section class=\"card\">
+        <h2>MQTT</h2>
+        <div class=\"stat\">Topic: {mqtt_topic}</div>
+        <div class=\"stat\">Save empty host to disable MQTT.</div>
+        <form method=\"post\" action=\"/mqtt/save\">
+          <label>Host</label>
+          <input name=\"host\" placeholder=\"broker.example.com\" value=\"{mqtt_host}\">
+          <label>Port</label>
+          <input name=\"port\" placeholder=\"1883 or 8883\" value=\"{mqtt_port}\">
+          <label>Username</label>
+          <input name=\"username\" placeholder=\"Optional username\" value=\"{mqtt_username}\">
+          <label>Password</label>
+          <input name=\"password\" type=\"password\" placeholder=\"Optional password\" value=\"{mqtt_password}\">
+          <label>Client ID</label>
+          <input name=\"client_id\" placeholder=\"Defaults to device name\" value=\"{mqtt_client_id}\">
+          <label>Keepalive Seconds</label>
+          <input name=\"keepalive\" placeholder=\"60\" value=\"{mqtt_keepalive}\">
+          <label><input name=\"tls\" type=\"checkbox\" value=\"1\"{mqtt_tls_checked}> Use TLS for MQTTS</label>
+          <div class=\"actions\"><button type=\"submit\">Save MQTT</button></div>
+        </form>
+      </section>
+      <section class=\"card\">
         <h2>Add Wi-Fi</h2>
         <form method=\"post\" action=\"/wifi/save\">
           <label>SSID</label>
@@ -1298,6 +1400,14 @@ class ControlPanelSession:
             timezone_sign="+" if timezone_offset_minutes >= 0 else "-",
             timezone_hours=abs(timezone_offset_minutes) // 60,
             timezone_minutes=abs(timezone_offset_minutes) % 60,
+            mqtt_topic=_html_escape(mqtt_topic),
+            mqtt_host=_html_escape(mqtt_config.get("host", "")),
+            mqtt_port=_html_escape(mqtt_port),
+            mqtt_username=_html_escape(mqtt_config.get("username", "")),
+            mqtt_password=_html_escape(mqtt_config.get("password", "")),
+            mqtt_client_id=_html_escape(mqtt_config.get("client_id", "")),
+            mqtt_keepalive=_html_escape(mqtt_keepalive),
+            mqtt_tls_checked=mqtt_tls_checked,
             saved_rows="".join(saved_rows),
             nearby_rows="".join(nearby_rows),
             options="".join(options),
