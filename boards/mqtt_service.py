@@ -59,6 +59,9 @@ class MQTTService:
     def set_message_callback(self, callback):
         self._message_callback = callback
 
+    def is_connected(self):
+        return self._connected and self._client is not None
+
     def reset(self):
         self.disconnect()
         self._config_signature = None

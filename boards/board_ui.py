@@ -20,6 +20,16 @@ STATUS_LEFT_WIDTH = 190
 STATUS_RIGHT_WIDTH = 192
 STATUS_CENTER_X = 164
 STATUS_CENTER_WIDTH = 72
+WIFI_ICON_X = 280
+WIFI_ICON_Y = 6
+MQTT_ICON_X = 308
+MQTT_ICON_Y = 6
+BATTERY_ICON_X = 332
+BATTERY_ICON_Y = 6
+BATTERY_BODY_WIDTH = 24
+BATTERY_BODY_HEIGHT = 12
+BATTERY_TIP_WIDTH = 3
+BATTERY_TIP_HEIGHT = 6
 
 CLOCK_TOP = 52
 DIGIT_WIDTH = 72
@@ -63,6 +73,7 @@ _display = None
 _home_screen = None
 _home_left_label = None
 _home_right_label = None
+_home_icons = None
 _home_digits = None
 _home_colon = None
 _home_date_label = None
@@ -72,6 +83,7 @@ _home_hint_label = None
 _panel_screen = None
 _panel_left_label = None
 _panel_right_label = None
+_panel_icons = None
 _panel_title_label = None
 _panel_body_labels = None
 
@@ -79,6 +91,7 @@ _message_screen = None
 _message_left_label = None
 _message_center_label = None
 _message_right_label = None
+_message_icons = None
 _message_title_label = None
 _message_body_label = None
 _message_footer_label = None
@@ -86,6 +99,7 @@ _message_footer_label = None
 _rtc = None
 _sensor = None
 _battery = None
+_mqtt_connected = False
 
 
 def _color(value):
@@ -121,6 +135,15 @@ def _make_frame(parent, x, y, width, height, border=0xFFFFFF, border_width=1):
     frame.set_style_border_color(_color(border), 0)
     frame.set_style_border_width(border_width, 0)
     return frame
+
+
+def _set_border(obj, color=0xFFFFFF, width=1):
+    obj.set_style_border_color(_color(color), 0)
+    obj.set_style_border_width(width, 0)
+
+
+def _set_fill(obj, filled, color=0xFFFFFF):
+    obj.set_style_bg_color(_color(color if filled else 0x000000), 0)
 
 
 def _make_label(parent, x, y, width, height, color=0x000000):
@@ -313,6 +336,45 @@ def _format_battery_text():
         return "--.--V --%"
 
 
+def _battery_level_percent():
+    try:
+        data = _read_battery().read()
+        level = int(data.get("level", 0))
+    except Exception:
+        return 0
+    if level < 0:
+        return 0
+    if level > 100:
+        return 100
+    return level
+
+
+def _wifi_signal_bars():
+    if network is None:
+        return 0
+
+    try:
+        sta = network.WLAN(network.STA_IF)
+        if not sta.isconnected():
+            return 0
+        try:
+            rssi = sta.status("rssi")
+        except Exception:
+            rssi = None
+    except Exception:
+        return 0
+
+    if rssi is None:
+        return 4
+    if rssi >= -55:
+        return 4
+    if rssi >= -65:
+        return 3
+    if rssi >= -75:
+        return 2
+    return 1
+
+
 def _current_ssid():
     if network is None:
         return "NoWiFi"
@@ -354,6 +416,82 @@ def _make_status_bar(screen, with_center=False):
         center = _make_label(screen, STATUS_CENTER_X, STATUS_TEXT_Y, STATUS_CENTER_WIDTH, STATUS_BAR_HEIGHT - 8, color=0xFFFFFF)
         _set_text_align(center, lv.TEXT_ALIGN.CENTER)
     return left, center, right
+
+
+def _make_status_icons(screen):
+    wifi_bars = []
+    heights = (4, 6, 8, 10)
+    for index, height in enumerate(heights):
+        bar = _make_box(screen, WIFI_ICON_X + (index * 5), WIFI_ICON_Y + 10 - height, 3, height, bg=0x000000)
+        _set_border(bar)
+        wifi_bars.append(bar)
+
+    mqtt_left = _make_box(screen, MQTT_ICON_X, MQTT_ICON_Y + 4, 4, 4, bg=0x000000)
+    mqtt_right = _make_box(screen, MQTT_ICON_X + 10, MQTT_ICON_Y + 4, 4, 4, bg=0x000000)
+    mqtt_link = _make_box(screen, MQTT_ICON_X + 4, MQTT_ICON_Y + 5, 6, 2, bg=0x000000)
+    mqtt_link_cap_left = _make_box(screen, MQTT_ICON_X + 3, MQTT_ICON_Y + 3, 2, 6, bg=0x000000)
+    mqtt_link_cap_right = _make_box(screen, MQTT_ICON_X + 9, MQTT_ICON_Y + 3, 2, 6, bg=0x000000)
+    mqtt_break = _make_box(screen, MQTT_ICON_X + 6, MQTT_ICON_Y + 3, 2, 6, bg=0x000000)
+
+    battery_frame = _make_box(screen, BATTERY_ICON_X, BATTERY_ICON_Y + 1, BATTERY_BODY_WIDTH, BATTERY_BODY_HEIGHT, bg=0x000000)
+    _set_border(battery_frame)
+    battery_tip = _make_box(
+        screen,
+        BATTERY_ICON_X + BATTERY_BODY_WIDTH,
+        BATTERY_ICON_Y + 1 + ((BATTERY_BODY_HEIGHT - BATTERY_TIP_HEIGHT) // 2),
+        BATTERY_TIP_WIDTH,
+        BATTERY_TIP_HEIGHT,
+        bg=0xFFFFFF,
+    )
+
+    battery_bars = []
+    bar_x = BATTERY_ICON_X + 3
+    for _ in range(4):
+        bar = _make_box(screen, bar_x, BATTERY_ICON_Y + 4, 4, 6, bg=0x000000)
+        battery_bars.append(bar)
+        bar_x += 5
+
+    return {
+        "wifi_bars": tuple(wifi_bars),
+        "mqtt_left": mqtt_left,
+        "mqtt_right": mqtt_right,
+        "mqtt_link": mqtt_link,
+        "mqtt_link_cap_left": mqtt_link_cap_left,
+        "mqtt_link_cap_right": mqtt_link_cap_right,
+        "mqtt_break": mqtt_break,
+        "battery_frame": battery_frame,
+        "battery_tip": battery_tip,
+        "battery_bars": tuple(battery_bars),
+    }
+
+
+def _set_wifi_icon_state(icon_set, connected, bars):
+    for index, bar in enumerate(icon_set["wifi_bars"]):
+        _set_fill(bar, connected and index < bars)
+
+
+def _set_mqtt_icon_state(icon_set, connected):
+    _set_fill(icon_set["mqtt_left"], True)
+    _set_fill(icon_set["mqtt_right"], True)
+    _set_fill(icon_set["mqtt_link_cap_left"], True)
+    _set_fill(icon_set["mqtt_link_cap_right"], True)
+    _set_fill(icon_set["mqtt_link"], connected)
+    _set_fill(icon_set["mqtt_break"], not connected)
+
+
+def _set_battery_icon_state(icon_set, level_percent):
+    filled = 0
+    if level_percent >= 75:
+        filled = 4
+    elif level_percent >= 50:
+        filled = 3
+    elif level_percent >= 25:
+        filled = 2
+    elif level_percent > 5:
+        filled = 1
+
+    for index, bar in enumerate(icon_set["battery_bars"]):
+        _set_fill(bar, index < filled)
 
 
 def _digit_x(index):
@@ -406,7 +544,7 @@ def _set_colon_state(colon_segments, enabled):
 
 
 def _ensure_home_screen():
-    global _home_screen, _home_left_label, _home_right_label, _home_digits, _home_colon
+    global _home_screen, _home_left_label, _home_right_label, _home_icons, _home_digits, _home_colon
     global _home_date_label, _home_status_label, _home_hint_label
 
     if _home_screen is not None:
@@ -414,6 +552,7 @@ def _ensure_home_screen():
 
     screen = _make_screen()
     left, _, right = _make_status_bar(screen)
+    icons = _make_status_icons(screen)
 
     digits = []
     for index in range(4):
@@ -431,6 +570,7 @@ def _ensure_home_screen():
     _home_screen = screen
     _home_left_label = left
     _home_right_label = right
+    _home_icons = icons
     _home_digits = digits
     _home_colon = colon
     _home_date_label = date_label
@@ -440,13 +580,14 @@ def _ensure_home_screen():
 
 
 def _ensure_panel_screen():
-    global _panel_screen, _panel_left_label, _panel_right_label, _panel_title_label, _panel_body_labels
+    global _panel_screen, _panel_left_label, _panel_right_label, _panel_icons, _panel_title_label, _panel_body_labels
 
     if _panel_screen is not None:
         return _panel_screen
 
     screen = _make_screen()
     left, _, right = _make_status_bar(screen)
+    icons = _make_status_icons(screen)
     title_label = _make_label(screen, 8, PANEL_TITLE_Y, SCREEN_WIDTH - 16, 20, color=0x000000)
 
     body_labels = []
@@ -458,6 +599,7 @@ def _ensure_panel_screen():
     _panel_screen = screen
     _panel_left_label = left
     _panel_right_label = right
+    _panel_icons = icons
     _panel_title_label = title_label
     _panel_body_labels = body_labels
     return screen
@@ -465,13 +607,14 @@ def _ensure_panel_screen():
 
 def _ensure_message_screen():
     global _message_screen, _message_left_label, _message_center_label, _message_right_label
-    global _message_title_label, _message_body_label, _message_footer_label
+    global _message_icons, _message_title_label, _message_body_label, _message_footer_label
 
     if _message_screen is not None:
         return _message_screen
 
     screen = _make_screen(background=0x000000)
     left, center, right = _make_status_bar(screen, with_center=True)
+    icons = _make_status_icons(screen)
     _make_frame(screen, 18, 46, SCREEN_WIDTH - 36, 202, border=0xFFFFFF, border_width=1)
     _make_box(screen, 28, 74, SCREEN_WIDTH - 56, 1, bg=0xFFFFFF)
     title_label = _make_label(screen, 24, 54, SCREEN_WIDTH - 48, 16, color=0xFFFFFF)
@@ -486,6 +629,7 @@ def _ensure_message_screen():
     _message_left_label = left
     _message_center_label = center
     _message_right_label = right
+    _message_icons = icons
     _message_title_label = title_label
     _message_body_label = body_label
     _message_footer_label = footer_label
@@ -503,19 +647,34 @@ def ensure_display():
     return _home_screen
 
 
+def set_mqtt_connected(connected):
+    global _mqtt_connected
+    _mqtt_connected = bool(connected)
+
+
 def refresh_status_bar():
     ensure_display()
     left_text = _fit_single_line(_format_env_text(), limit=16)
-    right_text = _fit_single_line("{} {}".format(_trim_text(_current_ssid(), 10), _format_battery_text()), limit=22)
+    wifi_bars = _wifi_signal_bars()
+    wifi_connected = wifi_bars > 0
+    battery_level = _battery_level_percent()
 
     _home_left_label.set_text(left_text)
-    _home_right_label.set_text(right_text)
+    _home_right_label.set_text("")
     _panel_left_label.set_text(left_text)
-    _panel_right_label.set_text(right_text)
+    _panel_right_label.set_text("")
+    _set_wifi_icon_state(_home_icons, wifi_connected, wifi_bars)
+    _set_mqtt_icon_state(_home_icons, _mqtt_connected)
+    _set_battery_icon_state(_home_icons, battery_level)
+    _set_wifi_icon_state(_panel_icons, wifi_connected, wifi_bars)
+    _set_mqtt_icon_state(_panel_icons, _mqtt_connected)
+    _set_battery_icon_state(_panel_icons, battery_level)
     if _message_left_label is not None:
         _message_left_label.set_text(left_text)
-    if _message_right_label is not None:
-        _message_right_label.set_text(right_text)
+        _message_right_label.set_text("")
+        _set_wifi_icon_state(_message_icons, wifi_connected, wifi_bars)
+        _set_mqtt_icon_state(_message_icons, _mqtt_connected)
+        _set_battery_icon_state(_message_icons, battery_level)
 
 
 def current_time_text(blink=False):

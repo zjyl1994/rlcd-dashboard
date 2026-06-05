@@ -19,6 +19,7 @@ def _clock_hint_text():
 
 
 def _show_clock(mqtt):
+    board_ui.set_mqtt_connected(mqtt.is_connected())
     board_ui.show_clock(
         time_text=board_ui.current_time_text(blink=True),
         date_text=board_ui.current_date_text(),
@@ -44,6 +45,7 @@ def _resume_after_portal(mqtt):
         device_portal.sync_time_from_ntp_once()
     mqtt.reset()
     mqtt.ensure_connected(force=True)
+    board_ui.set_mqtt_connected(mqtt.is_connected())
 
 
 def run():
@@ -85,6 +87,7 @@ def run():
 
     mqtt.set_message_callback(_show_mqtt_message)
     mqtt.ensure_connected(force=True)
+    board_ui.set_mqtt_connected(mqtt.is_connected())
 
     last_status_refresh = None
     last_clock_refresh = None
@@ -92,6 +95,7 @@ def run():
 
     while True:
         mqtt.poll()
+        board_ui.set_mqtt_connected(mqtt.is_connected())
         now = time.ticks_ms()
 
         if message_state["active"] and device_portal.is_key_pressed():
@@ -112,15 +116,17 @@ def run():
             if last_clock_refresh is None or time.ticks_diff(now, last_clock_refresh) >= CLOCK_REFRESH_INTERVAL_MS:
                 _show_clock(mqtt)
                 last_clock_refresh = now
-            if last_status_refresh is None or time.ticks_diff(now, last_status_refresh) >= STATUS_REFRESH_INTERVAL_MS:
-                board_ui.refresh_status_bar()
-                last_status_refresh = now
+
+        if last_status_refresh is None or time.ticks_diff(now, last_status_refresh) >= STATUS_REFRESH_INTERVAL_MS:
+            board_ui.refresh_status_bar()
+            last_status_refresh = now
 
         if device_portal.is_boot_pressed():
             if hold_started is None:
                 hold_started = now
             elif time.ticks_diff(now, hold_started) >= device_portal.BOOT_HOLD_MS:
                 mqtt.disconnect("portal open")
+                board_ui.set_mqtt_connected(False)
                 board_ui.show_panel(
                     "Web Control Panel",
                     (
