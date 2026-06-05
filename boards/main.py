@@ -1,13 +1,120 @@
 import time
 
+import board
 import board_ui
 import device_portal
 import mqtt_service
+
+try:
+    import ujson as json
+except ImportError:
+    import json
 
 
 STATUS_REFRESH_INTERVAL_MS = 5000
 CLOCK_REFRESH_INTERVAL_MS = 1000
 POLL_INTERVAL_MS = 100
+NOTIFY_SAMPLE_RATE = 16000
+
+
+_notify_chunks = None
+
+
+def _to_text(value):
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except Exception:
+            try:
+                return value.decode()
+            except Exception:
+                return str(value)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _parse_message_payload(payload):
+    raw_text = _to_text(payload)
+    title = "Message"
+    content = raw_text or "(empty)"
+    bell = 0
+
+    try:
+        data = json.loads(raw_text)
+    except Exception:
+        return {"title": title, "content": content, "bell": bell}
+
+    if not isinstance(data, dict):
+        return {"title": title, "content": content, "bell": bell}
+
+    title = _to_text(data.get("title") or "Message")
+    content = _to_text(data.get("content") or "") or "(empty)"
+    try:
+        bell = int(data.get("bell", 0))
+    except Exception:
+        bell = 0
+
+    return {"title": title, "content": content, "bell": bell}
+
+
+def _make_tone_chunk(freq_hz, duration_ms, amplitude=5000):
+    sample_count = (NOTIFY_SAMPLE_RATE * duration_ms) // 1000
+    half_period = max(1, NOTIFY_SAMPLE_RATE // (freq_hz * 2))
+    data = bytearray(sample_count * 4)
+    value = amplitude
+    step = 0
+    offset = 0
+
+    for _ in range(sample_count):
+        step += 1
+        if step >= half_period:
+            step = 0
+            value = -value
+
+        pcm = value
+        if pcm < 0:
+            pcm += 65536
+
+        low = pcm & 0xFF
+        high = (pcm >> 8) & 0xFF
+        data[offset] = low
+        data[offset + 1] = high
+        data[offset + 2] = low
+        data[offset + 3] = high
+        offset += 4
+
+    return bytes(data)
+
+
+def _notification_sound_chunks():
+    global _notify_chunks
+    if _notify_chunks is None:
+        silence = bytes((NOTIFY_SAMPLE_RATE * 4 * 30) // 1000)
+        _notify_chunks = (
+            _make_tone_chunk(1568, 60),
+            silence,
+            _make_tone_chunk(2093, 100),
+        )
+    return _notify_chunks
+
+
+def _play_notification_sound():
+    try:
+        audio = board.init_audio(sample_rate=NOTIFY_SAMPLE_RATE)
+        try:
+            audio.volume(65)
+        except Exception:
+            pass
+        for chunk in _notification_sound_chunks():
+            audio.play(chunk)
+    except Exception:
+        return
+    finally:
+        try:
+            board.deinit_audio()
+        except Exception:
+            pass
 
 
 def _clock_status_text(mqtt):
@@ -62,19 +169,23 @@ def run():
         message_state["active"] = True
         current = message_state["index"] + 1
         total = len(message_state["queue"])
+        current_message = message_state["queue"][message_state["index"]]
         footer = "KEY read"
         if current < total:
             footer += " next"
         board_ui.show_fullscreen_message(
-            "Message {}/{}".format(current, total),
-            message_state["queue"][message_state["index"]],
+            current_message["title"],
+            current_message["content"],
             footer=footer,
         )
         board_ui.set_message_counter(current, total)
 
     def _show_mqtt_message(topic, payload):
         del topic
-        message_state["queue"].append(payload or "(empty)")
+        message = _parse_message_payload(payload)
+        message_state["queue"].append(message)
+        if message.get("bell") == 1:
+            _play_notification_sound()
         if not message_state["active"]:
             message_state["index"] = 0
         _show_current_message()

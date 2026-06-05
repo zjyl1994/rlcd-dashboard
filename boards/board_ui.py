@@ -89,10 +89,8 @@ _panel_body_labels = None
 
 _message_screen = None
 _message_left_label = None
-_message_center_label = None
 _message_right_label = None
 _message_icons = None
-_message_title_label = None
 _message_body_label = None
 _message_footer_label = None
 
@@ -606,31 +604,28 @@ def _ensure_panel_screen():
 
 
 def _ensure_message_screen():
-    global _message_screen, _message_left_label, _message_center_label, _message_right_label
-    global _message_icons, _message_title_label, _message_body_label, _message_footer_label
+    global _message_screen, _message_left_label, _message_right_label
+    global _message_body_label, _message_footer_label
 
     if _message_screen is not None:
         return _message_screen
 
     screen = _make_screen(background=0x000000)
-    left, center, right = _make_status_bar(screen, with_center=True)
-    icons = _make_status_icons(screen)
-    _make_frame(screen, 18, 46, SCREEN_WIDTH - 36, 202, border=0xFFFFFF, border_width=1)
-    _make_box(screen, 28, 74, SCREEN_WIDTH - 56, 1, bg=0xFFFFFF)
-    title_label = _make_label(screen, 24, 54, SCREEN_WIDTH - 48, 16, color=0xFFFFFF)
-    body_label = _make_label(screen, 28, 88, SCREEN_WIDTH - 56, 144, color=0xFFFFFF)
+    _make_box(screen, 0, 0, SCREEN_WIDTH, STATUS_BAR_HEIGHT, bg=0x000000)
+    left = _make_label(screen, 8, STATUS_TEXT_Y, 300, STATUS_BAR_HEIGHT - 8, color=0xFFFFFF)
+    right = _make_label(screen, 318, STATUS_TEXT_Y, 74, STATUS_BAR_HEIGHT - 8, color=0xFFFFFF)
+    _set_text_align(right, lv.TEXT_ALIGN.RIGHT)
+
+    _make_frame(screen, 18, 40, SCREEN_WIDTH - 36, 208, border=0xFFFFFF, border_width=1)
+    body_label = _make_label(screen, 28, 56, SCREEN_WIDTH - 56, 176, color=0xFFFFFF)
     footer_label = _make_label(screen, 10, 264, SCREEN_WIDTH - 20, 18, color=0xFFFFFF)
 
-    _set_text_align(title_label, lv.TEXT_ALIGN.CENTER)
     _set_text_align(footer_label, lv.TEXT_ALIGN.CENTER)
     _set_label_wrap(body_label)
 
     _message_screen = screen
     _message_left_label = left
-    _message_center_label = center
     _message_right_label = right
-    _message_icons = icons
-    _message_title_label = title_label
     _message_body_label = body_label
     _message_footer_label = footer_label
     return screen
@@ -669,12 +664,6 @@ def refresh_status_bar():
     _set_wifi_icon_state(_panel_icons, wifi_connected, wifi_bars)
     _set_mqtt_icon_state(_panel_icons, _mqtt_connected)
     _set_battery_icon_state(_panel_icons, battery_level)
-    if _message_left_label is not None:
-        _message_left_label.set_text(left_text)
-        _message_right_label.set_text("")
-        _set_wifi_icon_state(_message_icons, wifi_connected, wifi_bars)
-        _set_mqtt_icon_state(_message_icons, _mqtt_connected)
-        _set_battery_icon_state(_message_icons, battery_level)
 
 
 def current_time_text(blink=False):
@@ -736,7 +725,7 @@ def show_panel(title, lines=None, refresh_status=True):
 
 def show_fullscreen_message(title, message, footer=""):
     screen = _ensure_message_screen()
-    _message_title_label.set_text(_fit_single_line(title))
+    _message_left_label.set_text(_fit_single_line(title, limit=18))
     _message_body_label.set_text(_truncate_wrapped_text(message))
     _message_footer_label.set_text(_fit_single_line(footer))
     lv.screen_load(screen)
@@ -744,9 +733,9 @@ def show_fullscreen_message(title, message, footer=""):
 
 def set_message_counter(current, total):
     _ensure_message_screen()
-    if _message_center_label is None:
+    if _message_right_label is None:
         return
-    _message_center_label.set_text("{}/{}".format(int(current), int(total)))
+    _message_right_label.set_text("{}/{}".format(int(current), int(total)))
 
 
 def poll():
