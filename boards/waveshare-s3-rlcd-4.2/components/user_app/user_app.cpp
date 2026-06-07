@@ -16,6 +16,7 @@
 #include <esp_log.h>
 #include <esp_mac.h>
 #include <esp_netif.h>
+#include <esp_pm.h>
 #include <esp_random.h>
 #include <esp_timer.h>
 #include <esp_sntp.h>
@@ -139,6 +140,8 @@ static bool key_button_pressed = false;
 static bool message_overlay_active = false;
 static bool message_overlay_requires_key = false;
 static TickType_t boot_button_press_ticks = 0;
+static esp_pm_lock_handle_t overlay_input_pm_lock = NULL;
+static bool overlay_input_pm_lock_held = false;
 static char connected_ssid[33] = {0};
 static int connected_rssi = -127;
 static char provision_ap_ssid[33] = {0};
@@ -176,6 +179,8 @@ static void audio_request_notification_beep(void);
 static void ui_set_default_status_message_locked(void);
 static bool sync_system_time_from_rtc(void);
 static void wifi_apply_power_save(bool connected, bool provisioning);
+static void power_management_init(void);
+static void overlay_input_power_lock_set(bool active);
 
 static uint32_t provision_ip_addr(void)
 {
@@ -353,6 +358,37 @@ static bool sync_system_time_from_rtc(void)
     }
 
     return true;
+}
+
+static void power_management_init(void)
+{
+#if CONFIG_PM_ENABLE
+    esp_pm_config_t pm_config = {};
+    pm_config.max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+    pm_config.min_freq_mhz = 40;
+    pm_config.light_sleep_enable = true;
+    ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
+    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "overlay_input", &overlay_input_pm_lock));
+    ESP_LOGI(TAG, "PM enabled: max=%d MHz min=%d MHz light_sleep=%d", pm_config.max_freq_mhz, pm_config.min_freq_mhz, pm_config.light_sleep_enable);
+#endif
+}
+
+static void overlay_input_power_lock_set(bool active)
+{
+#if CONFIG_PM_ENABLE
+    if (overlay_input_pm_lock == NULL || overlay_input_pm_lock_held == active) {
+        return;
+    }
+
+    if (active) {
+        ESP_ERROR_CHECK(esp_pm_lock_acquire(overlay_input_pm_lock));
+    } else {
+        ESP_ERROR_CHECK(esp_pm_lock_release(overlay_input_pm_lock));
+    }
+    overlay_input_pm_lock_held = active;
+#else
+    LV_UNUSED(active);
+#endif
 }
 
 static void adjust_rtc_timezone_offset(int old_offset, int new_offset)
@@ -575,6 +611,8 @@ static void ui_show_message_overlay(const char *title, const char *message, int 
         message_overlay_expire_at_us = 0;
     }
     state_unlock();
+
+    overlay_input_power_lock_set(timeout_seconds == 0);
 }
 
 static void ui_hide_message_overlay(void)
@@ -589,6 +627,8 @@ static void ui_hide_message_overlay(void)
     message_overlay_requires_key = false;
     message_overlay_expire_at_us = 0;
     state_unlock();
+
+    overlay_input_power_lock_set(false);
 }
 
 static void audio_prepare_beep_pcm(void)
@@ -2562,11 +2602,13 @@ static void boot_button_task(void *arg)
         bool pressed_now = gpio_get_level(BOOT_BUTTON_PIN) == 0;
         bool key_pressed_now = gpio_get_level(KEY_BUTTON_PIN) == 0;
 
-        if (key_pressed_now && !key_button_pressed) {
+        if (key_pressed_now) {
             bool local_overlay_active;
             bool local_overlay_requires_key;
 
-            key_button_pressed = true;
+            if (!key_button_pressed) {
+                key_button_pressed = true;
+            }
             state_lock();
             local_overlay_active = message_overlay_active;
             local_overlay_requires_key = message_overlay_requires_key;
@@ -2635,6 +2677,7 @@ void UserApp_AppInit(void)
     wifi_store_load();
     device_config_load();
     mqtt_config_load();
+    power_management_init();
 
     i2cbus = new I2cMasterBus(ESP32_I2C_SCL_PIN, ESP32_I2C_SDA_PIN, 0);
     Rtc_Setup(i2cbus, 0x51);

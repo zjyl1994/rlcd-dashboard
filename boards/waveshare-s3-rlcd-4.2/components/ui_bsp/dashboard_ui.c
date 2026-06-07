@@ -560,7 +560,7 @@ void dashboard_ui_init(void)
     lv_label_set_text(second_label, "SEC --");
     lv_label_set_text(status_label, "Booting...");
     lv_label_set_text(prov_title_label, "Provisioning Mode");
-    lv_label_set_text(prov_hint_label, "Open 192.168.4.1 in your phone browser\nAdd Wi-Fi credentials, then hold BOOT to exit.");
+    lv_label_set_text(prov_hint_label, "Open 192.168.4.1 in browser\nAdd Wi-Fi credentials\nHold BOOT to exit.");
     last_clock_hour = -1;
     last_clock_minute = -1;
 
