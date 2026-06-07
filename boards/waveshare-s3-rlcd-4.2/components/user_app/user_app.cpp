@@ -58,15 +58,19 @@ static const char *TAG = "dashboard";
 
 static constexpr int MAX_WIFI_CREDENTIALS = 8;
 static constexpr int MAX_SCAN_RESULTS = 20;
-static constexpr uint32_t DEVICE_CONFIG_VERSION = 1;
+static constexpr uint32_t DEVICE_CONFIG_VERSION = 2;
 static constexpr uint32_t WIFI_STORE_VERSION = 1;
 static constexpr int WIFI_CONNECT_TIMEOUT_MS = 15000;
-static constexpr uint16_t WIFI_LISTEN_INTERVAL_BEACONS = 10;
+static constexpr uint16_t WIFI_LISTEN_INTERVAL_BEACONS = 20;
 static constexpr int STATUS_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MESSAGE_MAX_LEN = 512;
 static constexpr int MQTT_MESSAGE_TITLE_MAX_LEN = 64;
 static constexpr int MQTT_TICKER_TEXT_MAX_LEN = MQTT_MESSAGE_MAX_LEN + MQTT_MESSAGE_TITLE_MAX_LEN + 16;
+static constexpr int MQTT_KEEPALIVE_SECONDS = 120;
+static constexpr int MQTT_RECONNECT_TIMEOUT_MS = 10000;
+static constexpr int MQTT_MAINT_CONNECTED_PERIOD_MS = 5000;
+static constexpr int MQTT_MAINT_DISCONNECTED_PERIOD_MS = 5000;
 static constexpr int AUDIO_BEEP_SAMPLE_RATE = 24000;
 static constexpr int AUDIO_BEEP_CHANNELS = 2;
 static constexpr int AUDIO_BEEP_BITS_PER_SAMPLE = 16;
@@ -74,6 +78,19 @@ static constexpr int AUDIO_BEEP_TYPE_NONE = 0;
 static constexpr int AUDIO_BEEP_TYPE_1 = 1;
 static constexpr int AUDIO_BEEP_TYPE_2 = 2;
 static constexpr int AUDIO_BEEP_TYPE_3 = 3;
+static constexpr uint8_t AUDIO_SOUND_MODE_MUTE = 0;
+static constexpr uint8_t AUDIO_SOUND_MODE_NORMAL = 1;
+static constexpr uint8_t AUDIO_SOUND_MODE_LOUD = 2;
+static constexpr int AUDIO_SOUND_VOLUME_NORMAL = 65;
+static constexpr int AUDIO_SOUND_VOLUME_LOUD = 100;
+static constexpr int BOOT_BUTTON_STARTUP_IGNORE_MS = 8000;
+static constexpr int BUTTON_POLL_PERIOD_MS = 20;
+static constexpr int UI_HOUSEKEEPING_PERIOD_MS = 1000;
+static constexpr int CLOCK_UPDATE_PERIOD_MS = 1000;
+static constexpr int SENSOR_UPDATE_PERIOD_MS = 60000;
+static constexpr int BATTERY_UPDATE_PERIOD_MS = 60000;
+static constexpr int WIFI_MONITOR_CONNECTED_PERIOD_MS = 60000;
+static constexpr int WIFI_MONITOR_DISCONNECTED_PERIOD_MS = 5000;
 static constexpr EventBits_t WIFI_CONNECTED_BIT = BIT0;
 static constexpr EventBits_t WIFI_CONNECT_FAIL_BIT = BIT1;
 
@@ -113,7 +130,14 @@ typedef struct {
     uint32_t version;
     int8_t timezone_offset_hours;
     char device_name[32];
+    uint8_t sound_mode;
 } device_config_t;
+
+typedef struct {
+    uint32_t version;
+    int8_t timezone_offset_hours;
+    char device_name[32];
+} legacy_device_config_v1_t;
 
 typedef struct {
     int type;
@@ -152,11 +176,11 @@ static bool rtc_ready = false;
 static bool boot_button_pressed = false;
 static bool boot_button_long_handled = false;
 static bool key_button_pressed = false;
+static bool key_button_long_handled = false;
 static bool message_overlay_active = false;
 static bool message_overlay_requires_key = false;
 static bool ticker_message_active = false;
 static bool ticker_message_requires_key = false;
-static TickType_t boot_button_press_ticks = 0;
 static esp_pm_lock_handle_t overlay_input_pm_lock = NULL;
 static bool overlay_input_pm_lock_held = false;
 static char connected_ssid[33] = {0};
@@ -181,11 +205,18 @@ static bool audio_beep_ready = false;
 static bool audio_beep_in_progress = false;
 static esp_codec_dev_handle_t audio_playback = NULL;
 static int audio_beep_pending_type = AUDIO_BEEP_TYPE_NONE;
+static bool manual_network_sync_in_progress = false;
+static bool last_message_valid = false;
+static mqtt_overlay_message_t last_message = {};
+static bool boot_button_armed = false;
+static bool key_button_armed = false;
+static TickType_t key_button_press_ticks = 0;
 
 static void wifi_enter_provisioning(void);
 static void wifi_exit_provisioning(bool reconnect_saved);
 static bool wifi_connect_saved_networks(bool enter_provision_on_fail);
 static bool schedule_provisioning_action(bool enter, bool reconnect_saved);
+static void device_config_snapshot(device_config_t *config);
 static void ui_show_message_overlay(const char *title, const char *message, int timeout_seconds);
 static void ui_hide_message_overlay(void);
 static void ui_show_ticker_message(const char *title, const char *message, int timeout_seconds);
@@ -196,12 +227,27 @@ static embedded_audio_clip_t audio_get_embedded_beep(int beep_type);
 static bool audio_init(void);
 static void audio_notification_beep_task(void *arg);
 static void audio_request_notification_beep(int beep_type);
+static void cache_last_message(const mqtt_overlay_message_t *message);
+static bool snapshot_last_message(mqtt_overlay_message_t *message);
+static void recall_last_message_fullscreen(void);
+static uint8_t audio_normalize_sound_mode(uint8_t mode);
+static const char *audio_sound_mode_name(uint8_t mode);
+static int audio_sound_mode_volume(uint8_t mode);
+static uint8_t audio_sound_mode_snapshot(void);
+static bool device_config_update_sound_mode(uint8_t sound_mode);
+static void manual_network_sync_task(void *arg);
+static void request_manual_network_sync(void);
+static void handle_short_key_press(void);
+static void handle_long_key_press(void);
+static void handle_short_boot_press(void);
+static void ntp_sync_once(void);
 static void ui_set_default_status_message_locked(void);
 static bool sync_system_time_from_rtc(void);
 static void wifi_apply_power_save(bool connected, bool provisioning);
 static void power_management_init(void);
 static void overlay_input_power_lock_set(bool active);
 static void sync_message_input_power_lock(void);
+static int wifi_store_count_snapshot(void);
 
 static uint32_t provision_ip_addr(void)
 {
@@ -297,6 +343,52 @@ static void device_config_reset(device_config_t *config)
     memset(config, 0, sizeof(*config));
     config->version = DEVICE_CONFIG_VERSION;
     config->timezone_offset_hours = 8;
+    config->sound_mode = AUDIO_SOUND_MODE_NORMAL;
+}
+
+static uint8_t audio_normalize_sound_mode(uint8_t mode)
+{
+    if (mode > AUDIO_SOUND_MODE_LOUD) {
+        return AUDIO_SOUND_MODE_NORMAL;
+    }
+
+    return mode;
+}
+
+static const char *audio_sound_mode_name(uint8_t mode)
+{
+    switch (audio_normalize_sound_mode(mode)) {
+        case AUDIO_SOUND_MODE_MUTE:
+            return "Mute";
+
+        case AUDIO_SOUND_MODE_LOUD:
+            return "Loud";
+
+        default:
+            return "Normal";
+    }
+}
+
+static int audio_sound_mode_volume(uint8_t mode)
+{
+    switch (audio_normalize_sound_mode(mode)) {
+        case AUDIO_SOUND_MODE_MUTE:
+            return 0;
+
+        case AUDIO_SOUND_MODE_LOUD:
+            return AUDIO_SOUND_VOLUME_LOUD;
+
+        default:
+            return AUDIO_SOUND_VOLUME_NORMAL;
+    }
+}
+
+static uint8_t audio_sound_mode_snapshot(void)
+{
+    device_config_t config;
+
+    device_config_snapshot(&config);
+    return audio_normalize_sound_mode(config.sound_mode);
 }
 
 static void build_default_device_name(char *out, size_t out_size)
@@ -417,7 +509,7 @@ static void sync_message_input_power_lock(void)
     bool should_hold_lock;
 
     state_lock();
-    should_hold_lock = message_overlay_requires_key || ticker_message_active;
+    should_hold_lock = message_overlay_requires_key;
     state_unlock();
 
     overlay_input_power_lock_set(should_hold_lock);
@@ -490,19 +582,38 @@ static esp_err_t device_config_commit(const device_config_t *config)
 static void device_config_load(void)
 {
     device_config_t loaded;
+    legacy_device_config_v1_t legacy_loaded = {};
     bool should_commit = false;
 
     device_config_reset(&loaded);
 
     nvs_handle_t handle;
     if (nvs_open("device_store", NVS_READONLY, &handle) == ESP_OK) {
-        size_t blob_size = sizeof(loaded);
-        esp_err_t err = nvs_get_blob(handle, "config", &loaded, &blob_size);
-        nvs_close(handle);
-        if (err != ESP_OK || blob_size != sizeof(loaded) || loaded.version != DEVICE_CONFIG_VERSION) {
+        size_t blob_size = 0;
+        esp_err_t err = nvs_get_blob(handle, "config", NULL, &blob_size);
+        if (err == ESP_OK && blob_size == sizeof(loaded)) {
+            err = nvs_get_blob(handle, "config", &loaded, &blob_size);
+            if (err != ESP_OK || loaded.version != DEVICE_CONFIG_VERSION) {
+                device_config_reset(&loaded);
+                should_commit = true;
+            }
+        } else if (err == ESP_OK && blob_size == sizeof(legacy_loaded)) {
+            err = nvs_get_blob(handle, "config", &legacy_loaded, &blob_size);
+            if (err == ESP_OK && legacy_loaded.version == 1) {
+                loaded.version = DEVICE_CONFIG_VERSION;
+                loaded.timezone_offset_hours = legacy_loaded.timezone_offset_hours;
+                strlcpy(loaded.device_name, legacy_loaded.device_name, sizeof(loaded.device_name));
+                loaded.sound_mode = AUDIO_SOUND_MODE_NORMAL;
+                should_commit = true;
+            } else {
+                device_config_reset(&loaded);
+                should_commit = true;
+            }
+        } else {
             device_config_reset(&loaded);
             should_commit = true;
         }
+        nvs_close(handle);
     } else {
         should_commit = true;
     }
@@ -517,6 +628,7 @@ static void device_config_load(void)
         build_default_device_name(loaded.device_name, sizeof(loaded.device_name));
         should_commit = true;
     }
+    loaded.sound_mode = audio_normalize_sound_mode(loaded.sound_mode);
 
     state_lock();
     device_config = loaded;
@@ -538,6 +650,15 @@ static bool device_config_update(const device_config_t *config)
     device_config = *config;
     state_unlock();
     return true;
+}
+
+static bool device_config_update_sound_mode(uint8_t sound_mode)
+{
+    device_config_t current_config;
+
+    device_config_snapshot(&current_config);
+    current_config.sound_mode = audio_normalize_sound_mode(sound_mode);
+    return device_config_update(&current_config);
 }
 
 static void build_mqtt_message_topic(char *out, size_t out_size)
@@ -667,10 +788,12 @@ static void ui_show_ticker_message(const char *title, const char *message, int t
 {
     char ticker_text[MQTT_TICKER_TEXT_MAX_LEN];
 
-    if (title != NULL && title[0] != '\0') {
-        snprintf(ticker_text, sizeof(ticker_text), "【%s】%s   ", title, (message != NULL) ? message : "");
+    if (title != NULL && title[0] != '\0' && message != NULL && message[0] != '\0') {
+        snprintf(ticker_text, sizeof(ticker_text), "【%s】%s", title, message);
+    } else if (title != NULL && title[0] != '\0') {
+        snprintf(ticker_text, sizeof(ticker_text), "【%s】", title);
     } else {
-        snprintf(ticker_text, sizeof(ticker_text), "%s   ", (message != NULL) ? message : "");
+        snprintf(ticker_text, sizeof(ticker_text), "%s", (message != NULL) ? message : "");
     }
 
     if (Lvgl_lock(-1)) {
@@ -784,8 +907,10 @@ static void audio_notification_beep_task(void *arg)
     state_unlock();
 
     if (audio_init()) {
+        int output_volume = audio_sound_mode_volume(audio_sound_mode_snapshot());
         embedded_audio_clip_t clip = audio_get_embedded_beep(local_beep_type);
-        if (clip.data != NULL && clip.size > 0) {
+        if (output_volume > 0 && clip.data != NULL && clip.size > 0) {
+            esp_codec_dev_set_out_vol(audio_playback, output_volume);
             esp_codec_dev_write(audio_playback, (void *)clip.data, clip.size);
         }
     }
@@ -800,6 +925,10 @@ static void audio_notification_beep_task(void *arg)
 
 static void audio_request_notification_beep(int beep_type)
 {
+    if (audio_sound_mode_snapshot() == AUDIO_SOUND_MODE_MUTE) {
+        return;
+    }
+
     state_lock();
     if (audio_beep_in_progress || beep_type <= AUDIO_BEEP_TYPE_NONE || beep_type > AUDIO_BEEP_TYPE_3) {
         state_unlock();
@@ -815,6 +944,162 @@ static void audio_request_notification_beep(int beep_type)
         state_unlock();
         ESP_LOGW(TAG, "Failed to start beep task");
     }
+}
+
+static void cache_last_message(const mqtt_overlay_message_t *message)
+{
+    if (message == NULL) {
+        return;
+    }
+
+    state_lock();
+    last_message = *message;
+    last_message_valid = true;
+    state_unlock();
+}
+
+static bool snapshot_last_message(mqtt_overlay_message_t *message)
+{
+    bool valid;
+
+    if (message == NULL) {
+        return false;
+    }
+
+    state_lock();
+    valid = last_message_valid;
+    if (valid) {
+        *message = last_message;
+    }
+    state_unlock();
+
+    return valid;
+}
+
+static void recall_last_message_fullscreen(void)
+{
+    mqtt_overlay_message_t message = {};
+    char fallback_title[32];
+    const char *title;
+
+    if (!snapshot_last_message(&message)) {
+        ui_set_status_message("No cached message");
+        return;
+    }
+
+    title = message.title;
+    if (title[0] == '\0') {
+        snprintf(fallback_title, sizeof(fallback_title), "Last Msg T%d", message.type);
+        title = fallback_title;
+    }
+
+    ui_show_message_overlay(title, message.content, 0);
+}
+
+static void manual_network_sync_task(void *arg)
+{
+    LV_UNUSED(arg);
+
+    bool connected = wifi_connect_saved_networks(false);
+    if (connected) {
+        ntp_sync_once();
+    } else {
+        ui_set_status_message("Manual reconnect failed");
+    }
+
+    state_lock();
+    manual_network_sync_in_progress = false;
+    state_unlock();
+    vTaskDelete(NULL);
+}
+
+static void request_manual_network_sync(void)
+{
+    state_lock();
+    if (manual_network_sync_in_progress) {
+        state_unlock();
+        ui_set_status_message("Network refresh busy");
+        return;
+    }
+    manual_network_sync_in_progress = true;
+    state_unlock();
+
+    ui_set_status_message("Reconnect Wi-Fi + sync NTP...");
+    if (xTaskCreatePinnedToCore(manual_network_sync_task, "net_sync", 6 * 1024, NULL, 3, NULL, 1) != pdPASS) {
+        state_lock();
+        manual_network_sync_in_progress = false;
+        state_unlock();
+        ui_set_status_message("Network refresh failed");
+    }
+}
+
+static void handle_short_key_press(void)
+{
+    bool local_overlay_active;
+    bool local_ticker_active;
+    bool local_provisioning;
+
+    state_lock();
+    local_overlay_active = message_overlay_active;
+    local_ticker_active = ticker_message_active;
+    local_provisioning = prov_active;
+    state_unlock();
+
+    if (local_provisioning) {
+        ui_set_status_message("Leaving provisioning...");
+        schedule_provisioning_action(false, true);
+    } else if (local_overlay_active) {
+        ui_hide_message_overlay();
+    } else if (local_ticker_active) {
+        ui_hide_ticker_message();
+        recall_last_message_fullscreen();
+    } else {
+        recall_last_message_fullscreen();
+    }
+}
+
+static void handle_long_key_press(void)
+{
+    request_manual_network_sync();
+}
+
+static void handle_short_boot_press(void)
+{
+    uint8_t current_mode;
+    uint8_t next_mode;
+    bool local_provisioning;
+
+    state_lock();
+    local_provisioning = prov_active;
+    state_unlock();
+
+    if (local_provisioning) {
+        ui_set_status_message("Leaving provisioning...");
+        schedule_provisioning_action(false, true);
+        return;
+    }
+
+    current_mode = audio_sound_mode_snapshot();
+    switch (current_mode) {
+        case AUDIO_SOUND_MODE_MUTE:
+            next_mode = AUDIO_SOUND_MODE_NORMAL;
+            break;
+
+        case AUDIO_SOUND_MODE_NORMAL:
+            next_mode = AUDIO_SOUND_MODE_LOUD;
+            break;
+
+        default:
+            next_mode = AUDIO_SOUND_MODE_MUTE;
+            break;
+    }
+
+    if (!device_config_update_sound_mode(next_mode)) {
+        ui_set_status_message("Sound mode save failed");
+        return;
+    }
+
+    ui_set_statusf("Sound: %s", audio_sound_mode_name(next_mode));
 }
 
 static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message_t *out_message)
@@ -899,6 +1184,8 @@ static void mqtt_handle_received_message(const char *payload)
         ui_set_status_message("MQTT JSON parse failed");
         return;
     }
+
+    cache_last_message(&message);
 
     if (message.beep_type != AUDIO_BEEP_TYPE_NONE) {
         audio_request_notification_beep(message.beep_type);
@@ -1225,7 +1512,7 @@ static void nvs_init(void)
     ESP_ERROR_CHECK(err);
 }
 
-static void button_init(void)
+static void buttons_init(void)
 {
     gpio_config_t config = {};
     config.intr_type = GPIO_INTR_DISABLE;
@@ -1234,6 +1521,13 @@ static void button_init(void)
     config.pull_up_en = GPIO_PULLUP_ENABLE;
     config.pull_down_en = GPIO_PULLDOWN_DISABLE;
     ESP_ERROR_CHECK(gpio_config(&config));
+
+    ESP_LOGI(TAG, "Buttons init: boot=%d key=%d poll=%dms long=%dms boot_ignore=%dms",
+             (int)BOOT_BUTTON_PIN,
+             (int)KEY_BUTTON_PIN,
+             BUTTON_POLL_PERIOD_MS,
+             CONFIG_LONG_PRESS_MS,
+             BOOT_BUTTON_STARTUP_IGNORE_MS);
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
@@ -2351,6 +2645,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 break;
             }
 
+            state_lock();
+            mqtt_connected = true;
+            state_unlock();
+            ui_update_mqtt_icon(true);
+
             if (event->current_data_offset == 0) {
                 bool topic_match = (event->topic_len == (int)strlen(mqtt_message_topic))
                                   && (strncmp(event->topic, mqtt_message_topic, (size_t)event->topic_len) == 0)
@@ -2446,8 +2745,9 @@ static bool mqtt_start_client(void)
     client_cfg.credentials.client_id = mqtt_client_id;
     client_cfg.credentials.username = mqtt_username[0] ? mqtt_username : NULL;
     client_cfg.credentials.authentication.password = mqtt_password[0] ? mqtt_password : NULL;
+    client_cfg.session.keepalive = MQTT_KEEPALIVE_SECONDS;
     client_cfg.network.timeout_ms = 10000;
-    client_cfg.network.reconnect_timeout_ms = 5000;
+    client_cfg.network.reconnect_timeout_ms = MQTT_RECONNECT_TIMEOUT_MS;
     client_cfg.task.stack_size = 6144;
     client_cfg.buffer.size = 1024;
     if (mqtt_settings.use_tls) {
@@ -2525,21 +2825,28 @@ static void mqtt_maintenance_task(void *arg)
             mqtt_start_client();
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        int delay_ms = (local_client != NULL && local_wifi_connected && !local_provisioning && local_mqtt_valid && !local_restart_requested)
+                       ? MQTT_MAINT_CONNECTED_PERIOD_MS
+                       : MQTT_MAINT_DISCONNECTED_PERIOD_MS;
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 }
 
 static void ui_housekeeping_task(void *arg)
 {
     LV_UNUSED(arg);
+    bool last_mqtt_icon_connected = false;
+    bool mqtt_icon_initialized = false;
 
     while (1) {
         bool clear_status = false;
         bool hide_overlay = false;
         bool hide_ticker = false;
+        bool local_mqtt_connected = false;
         int64_t now = esp_timer_get_time();
 
         state_lock();
+        local_mqtt_connected = mqtt_connected;
         if (status_message_expire_at_us > 0 && now >= status_message_expire_at_us) {
             status_message_expire_at_us = 0;
             clear_status = true;
@@ -2566,7 +2873,13 @@ static void ui_housekeeping_task(void *arg)
             ui_hide_ticker_message();
         }
 
-        vTaskDelay(pdMS_TO_TICKS(250));
+        if (!mqtt_icon_initialized || local_mqtt_connected != last_mqtt_icon_connected) {
+            ui_update_mqtt_icon(local_mqtt_connected);
+            last_mqtt_icon_connected = local_mqtt_connected;
+            mqtt_icon_initialized = true;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(UI_HOUSEKEEPING_PERIOD_MS));
     }
 }
 
@@ -2609,7 +2922,7 @@ static void clock_task(void *arg)
                 Lvgl_unlock();
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(500));
+        vTaskDelay(pdMS_TO_TICKS(CLOCK_UPDATE_PERIOD_MS));
     }
 }
 
@@ -2627,7 +2940,7 @@ static void sensor_task(void *arg)
                 Lvgl_unlock();
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(SENSOR_UPDATE_PERIOD_MS));
     }
 }
 
@@ -2641,7 +2954,7 @@ static void battery_task(void *arg)
             dashboard_ui_update_battery(level);
             Lvgl_unlock();
         }
-        vTaskDelay(pdMS_TO_TICKS(10000));
+        vTaskDelay(pdMS_TO_TICKS(BATTERY_UPDATE_PERIOD_MS));
     }
 }
 
@@ -2679,7 +2992,7 @@ static void wifi_monitor_task(void *arg)
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(local_connected ? WIFI_MONITOR_CONNECTED_PERIOD_MS : WIFI_MONITOR_DISCONNECTED_PERIOD_MS));
     }
 }
 
@@ -2693,75 +3006,127 @@ static void ntp_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(1000));
         ntp_sync_once();
 
-        TickType_t elapsed = 0;
-        while (elapsed < sync_interval) {
-            vTaskDelay(pdMS_TO_TICKS(5000));
-            elapsed += pdMS_TO_TICKS(5000);
-            if ((xEventGroupGetBits(wifi_event_group) & WIFI_CONNECTED_BIT) == 0) {
-                break;
-            }
-        }
+        vTaskDelay(sync_interval);
     }
 }
 
 static void boot_button_task(void *arg)
 {
     LV_UNUSED(arg);
+    const TickType_t poll_ticks = pdMS_TO_TICKS(BUTTON_POLL_PERIOD_MS);
     const TickType_t long_press_ticks = pdMS_TO_TICKS(CONFIG_LONG_PRESS_MS);
+    const TickType_t boot_arm_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(BOOT_BUTTON_STARTUP_IGNORE_MS);
+    bool combo_buttons_handled = false;
+
+    boot_button_armed = false;
+    key_button_armed = gpio_get_level(KEY_BUTTON_PIN) != 0;
+    boot_button_pressed = false;
+    boot_button_long_handled = false;
+    key_button_pressed = false;
+    key_button_long_handled = false;
 
     while (1) {
-        bool pressed_now = gpio_get_level(BOOT_BUTTON_PIN) == 0;
-        bool key_pressed_now = gpio_get_level(KEY_BUTTON_PIN) == 0;
+        TickType_t now = xTaskGetTickCount();
+        bool raw_boot_pressed = gpio_get_level(BOOT_BUTTON_PIN) == 0;
+        bool raw_key_pressed = gpio_get_level(KEY_BUTTON_PIN) == 0;
 
-        if (key_pressed_now) {
-            bool local_overlay_active;
-            bool local_overlay_requires_key;
-            bool local_ticker_active;
-            bool local_ticker_requires_key;
-
-            if (!key_button_pressed) {
-                key_button_pressed = true;
+        if (!key_button_armed) {
+            if (!raw_key_pressed) {
+                key_button_armed = true;
+            } else {
+                vTaskDelay(poll_ticks);
+                continue;
             }
-            state_lock();
-            local_overlay_active = message_overlay_active;
-            local_overlay_requires_key = message_overlay_requires_key;
-            local_ticker_active = ticker_message_active;
-            local_ticker_requires_key = ticker_message_requires_key;
-            state_unlock();
-
-            if (local_overlay_active && local_overlay_requires_key) {
-                ui_hide_message_overlay();
-            } else if (!local_overlay_active && local_ticker_active && local_ticker_requires_key) {
-                ui_hide_ticker_message();
-            }
-        } else if (!key_pressed_now) {
-            key_button_pressed = false;
         }
 
-        if (pressed_now && !boot_button_pressed) {
-            boot_button_pressed = true;
-            boot_button_long_handled = false;
-            boot_button_press_ticks = xTaskGetTickCount();
-        } else if (!pressed_now) {
-            boot_button_pressed = false;
-            boot_button_long_handled = false;
-        } else if (!boot_button_long_handled
-                   && (xTaskGetTickCount() - boot_button_press_ticks) >= long_press_ticks) {
+        if (!boot_button_armed && now >= boot_arm_deadline && !raw_boot_pressed) {
+            boot_button_armed = true;
+        }
+
+        bool boot_pressed_now = boot_button_armed ? raw_boot_pressed : false;
+        bool key_pressed_now = key_button_armed ? raw_key_pressed : false;
+
+        if (boot_pressed_now && key_pressed_now) {
+            if (!combo_buttons_handled) {
+                bool local_provisioning;
+
+                combo_buttons_handled = true;
+                boot_button_pressed = true;
+                key_button_pressed = true;
+                boot_button_long_handled = true;
+                key_button_long_handled = true;
+
+                state_lock();
+                local_provisioning = prov_active;
+                state_unlock();
+
+                if (!local_provisioning) {
+                    ui_set_status_message("Entering provisioning...");
+                    schedule_provisioning_action(true, false);
+                }
+            }
+
+            vTaskDelay(poll_ticks);
+            continue;
+        }
+
+        if (combo_buttons_handled) {
+            if (!boot_pressed_now && !key_pressed_now) {
+                combo_buttons_handled = false;
+                boot_button_long_handled = false;
+                key_button_long_handled = false;
+                boot_button_pressed = false;
+                key_button_pressed = false;
+            }
+
+            vTaskDelay(poll_ticks);
+            continue;
+        }
+
+        if (key_pressed_now && !key_button_pressed) {
+            key_button_pressed = true;
+            key_button_long_handled = false;
+            key_button_press_ticks = now;
+        } else if (!key_pressed_now && key_button_pressed) {
+            if (!key_button_long_handled) {
+                handle_short_key_press();
+            }
+            key_button_pressed = false;
+            key_button_long_handled = false;
+        } else if (key_pressed_now && !key_button_long_handled && (now - key_button_press_ticks) >= long_press_ticks) {
             bool local_provisioning;
 
-            boot_button_long_handled = true;
             state_lock();
             local_provisioning = prov_active;
             state_unlock();
-
-            if (local_provisioning) {
-                schedule_provisioning_action(false, true);
-            } else {
-                schedule_provisioning_action(true, false);
+            if (!local_provisioning) {
+                key_button_long_handled = true;
+                handle_long_key_press();
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(50));
+        if (boot_pressed_now && !boot_button_pressed) {
+            boot_button_pressed = true;
+            boot_button_long_handled = false;
+        } else if (!boot_pressed_now && boot_button_pressed) {
+            if (!boot_button_long_handled) {
+                bool local_overlay_active;
+
+                state_lock();
+                local_overlay_active = message_overlay_active;
+                state_unlock();
+
+                if (local_overlay_active) {
+                    ui_hide_message_overlay();
+                } else {
+                    handle_short_boot_press();
+                }
+            }
+            boot_button_pressed = false;
+            boot_button_long_handled = false;
+        }
+
+        vTaskDelay(poll_ticks);
     }
 }
 
@@ -2802,7 +3167,7 @@ void UserApp_AppInit(void)
     sync_system_time_from_rtc();
     shtc3 = new Shtc3Port(*i2cbus);
     Adc_PortInit();
-    button_init();
+    buttons_init();
 }
 
 void UserApp_UiInit(void)

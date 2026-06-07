@@ -21,8 +21,8 @@
 #define SECOND_LABEL_WIDTH 112
 #define TOP_ICON_Y 11
 #define TOP_ICON_HEIGHT 14
-#define MQTT_BADGE_X 336
-#define WIFI_ICON_X 354
+#define MQTT_BADGE_X 326
+#define WIFI_ICON_X 344
 #define MQTT_BADGE_Y TOP_ICON_Y
 #define MQTT_BADGE_SIZE TOP_ICON_HEIGHT
 #define WIFI_BAR_WIDTH 3
@@ -35,7 +35,7 @@
 #define WIFI_BAR_2_H 10
 #define WIFI_BAR_3_Y (TOP_ICON_Y + 1)
 #define WIFI_BAR_3_H 13
-#define BATTERY_OUTLINE_X 373
+#define BATTERY_OUTLINE_X 363
 #define BATTERY_OUTLINE_Y TOP_ICON_Y
 #define BATTERY_OUTLINE_W 18
 #define BATTERY_OUTLINE_H TOP_ICON_HEIGHT
@@ -61,14 +61,14 @@
 #define CLOCK_DIGIT_WIDTH 72
 #define CLOCK_DIGIT_HEIGHT 140
 #define CLOCK_SEGMENT_THICKNESS 14
-#define CLOCK_SEGMENT_TIP 10
-#define CLOCK_HORIZONTAL_X_OFFSET 10
-#define CLOCK_HORIZONTAL_LENGTH 52
-#define CLOCK_VERTICAL_UPPER_Y 10
-#define CLOCK_VERTICAL_LOWER_Y 70
-#define CLOCK_VERTICAL_LENGTH 60
+#define CLOCK_HORIZONTAL_X_OFFSET 0
+#define CLOCK_HORIZONTAL_LENGTH CLOCK_DIGIT_WIDTH
 #define CLOCK_MIDDLE_SEGMENT_Y 63
 #define CLOCK_BOTTOM_SEGMENT_Y 126
+#define CLOCK_VERTICAL_UPPER_Y 0
+#define CLOCK_VERTICAL_UPPER_LENGTH (CLOCK_MIDDLE_SEGMENT_Y + CLOCK_SEGMENT_THICKNESS)
+#define CLOCK_VERTICAL_LOWER_Y CLOCK_MIDDLE_SEGMENT_Y
+#define CLOCK_VERTICAL_LOWER_LENGTH (CLOCK_DIGIT_HEIGHT - CLOCK_VERTICAL_LOWER_Y)
 #define CLOCK_COLON_CENTER_X 176
 #define CLOCK_COLON_TOP_CENTER_Y 50
 #define CLOCK_COLON_BOTTOM_CENTER_Y 96
@@ -77,12 +77,12 @@
 #define TICKER_VIEW_Y 280
 #define TICKER_VIEW_WIDTH 380
 #define TICKER_VIEW_HEIGHT 16
-#define TICKER_SCROLL_SPEED_PX_PER_SEC 48
-#define TICKER_TIMER_PERIOD_MS 10
-#define TICKER_GAP_PX 40
-#define TICKER_SUBPIXEL_SHIFT 8
-#define TICKER_SUBPIXEL_SCALE (1 << TICKER_SUBPIXEL_SHIFT)
+#define TICKER_TEXT_INSET_X 4
+#define TICKER_TEXT_WIDTH (TICKER_VIEW_WIDTH - (TICKER_TEXT_INSET_X * 2))
+#define TICKER_PAGE_INTERVAL_MS 2500
 #define TICKER_TEXT_MAX_LEN 640
+#define TICKER_PAGE_MAX_COUNT 48
+#define TICKER_PAGE_MAX_LEN 128
 #define MESSAGE_TITLE_BAR_HEIGHT 20
 #define MESSAGE_TITLE_LABEL_Y 2
 #define MESSAGE_TITLE_SCALE 256
@@ -102,6 +102,7 @@ static lv_obj_t *date_label;
 static lv_obj_t *second_label;
 static lv_obj_t *status_label;
 static lv_obj_t *ticker_view;
+static lv_obj_t *ticker_label;
 static lv_obj_t *prov_title_label;
 static lv_obj_t *prov_ssid_label;
 static lv_obj_t *prov_ip_label;
@@ -116,13 +117,13 @@ static lv_obj_t *message_content_view;
 static lv_obj_t *message_label;
 static int last_clock_hour = -1;
 static int last_clock_minute = -1;
+static int last_clock_colon_visible = -1;
 static bool clock_bitmap_cache_ready = false;
 static bool mqtt_badge_connected = false;
 static lv_timer_t *ticker_timer = NULL;
-static char ticker_text[TICKER_TEXT_MAX_LEN] = {0};
-static lv_point_t ticker_text_size = {0, 0};
-static int32_t ticker_cycle_width = 0;
-static int32_t ticker_offset_fp = 0;
+static char ticker_pages[TICKER_PAGE_MAX_COUNT][TICKER_PAGE_MAX_LEN] = {{0}};
+static uint16_t ticker_page_count = 0;
+static uint16_t ticker_page_index = 0;
 
 static uint8_t clock_digit_bitmaps[10][CLOCK_DIGIT_BITMAP_STRIDE * CLOCK_DIGIT_HEIGHT];
 static uint8_t clock_colon_bitmap[CLOCK_COLON_BITMAP_STRIDE * CLOCK_COLON_BITMAP_HEIGHT];
@@ -175,76 +176,122 @@ static lv_obj_t *create_label(lv_obj_t *parent, int x, int y, int w, lv_text_ali
     return create_label_with_font(parent, x, y, w, align, &unifont_16);
 }
 
+static size_t ticker_utf8_char_len(const char *text)
+{
+    unsigned char ch = (unsigned char)text[0];
+
+    if ((ch & 0x80U) == 0) {
+        return 1;
+    }
+    if ((ch & 0xE0U) == 0xC0U) {
+        return 2;
+    }
+    if ((ch & 0xF0U) == 0xE0U) {
+        return 3;
+    }
+    if ((ch & 0xF8U) == 0xF0U) {
+        return 4;
+    }
+
+    return 1;
+}
+
+static bool ticker_line_fits(const char *text)
+{
+    lv_point_t text_size = {0, 0};
+    lv_text_get_size(&text_size, text, &unifont_16, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_EXPAND);
+    return text_size.x <= TICKER_TEXT_WIDTH;
+}
+
+static void ticker_apply_current_page(void)
+{
+    if (ticker_label == NULL) {
+        return;
+    }
+
+    if (ticker_page_count == 0) {
+        lv_label_set_text(ticker_label, "");
+        return;
+    }
+
+    lv_label_set_text(ticker_label, ticker_pages[ticker_page_index]);
+}
+
+static void ticker_commit_page(const char *line)
+{
+    if (ticker_page_count >= TICKER_PAGE_MAX_COUNT) {
+        return;
+    }
+
+    strlcpy(ticker_pages[ticker_page_count], (line != NULL) ? line : "", sizeof(ticker_pages[0]));
+    ticker_page_count++;
+}
+
 static void ticker_prepare_text(const char *message)
 {
-    snprintf(ticker_text, sizeof(ticker_text), "%s", (message != NULL) ? message : "");
-    lv_text_get_size(&ticker_text_size, ticker_text, &unifont_16, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_EXPAND);
-    ticker_cycle_width = ticker_text_size.x + TICKER_GAP_PX;
-    if (ticker_cycle_width < (TICKER_VIEW_WIDTH + TICKER_GAP_PX)) {
-        ticker_cycle_width = TICKER_VIEW_WIDTH + TICKER_GAP_PX;
+    char line[TICKER_PAGE_MAX_LEN] = {0};
+    size_t line_len = 0;
+    const char *cursor = (message != NULL) ? message : "";
+
+    memset(ticker_pages, 0, sizeof(ticker_pages));
+    ticker_page_count = 0;
+    ticker_page_index = 0;
+
+    while (*cursor != '\0') {
+        if (*cursor == '\n') {
+            ticker_commit_page(line);
+            line[0] = '\0';
+            line_len = 0;
+            cursor++;
+            continue;
+        }
+
+        size_t char_len = ticker_utf8_char_len(cursor);
+        if (line_len + char_len >= sizeof(line)) {
+            ticker_commit_page(line);
+            line[0] = '\0';
+            line_len = 0;
+            continue;
+        }
+
+        char candidate[TICKER_PAGE_MAX_LEN] = {0};
+        memcpy(candidate, line, line_len);
+        memcpy(candidate + line_len, cursor, char_len);
+        candidate[line_len + char_len] = '\0';
+
+        if (line_len > 0 && !ticker_line_fits(candidate)) {
+            ticker_commit_page(line);
+            line[0] = '\0';
+            line_len = 0;
+            continue;
+        }
+
+        memcpy(line + line_len, cursor, char_len);
+        line_len += char_len;
+        line[line_len] = '\0';
+        cursor += char_len;
     }
-    ticker_offset_fp = TICKER_VIEW_WIDTH * TICKER_SUBPIXEL_SCALE;
+
+    if (line_len > 0 || ticker_page_count == 0) {
+        ticker_commit_page(line);
+    }
+
+    ticker_apply_current_page();
 }
 
 static void ticker_timer_cb(lv_timer_t *timer)
 {
     LV_UNUSED(timer);
 
-    if (ticker_view == NULL || ticker_text[0] == '\0' || ticker_cycle_width <= 0) {
+    if (ticker_view == NULL || ticker_label == NULL || ticker_page_count <= 1) {
         return;
     }
     if (lv_obj_has_flag(ticker_view, LV_OBJ_FLAG_HIDDEN)) {
         return;
     }
 
-    int32_t step_fp = (TICKER_SCROLL_SPEED_PX_PER_SEC * TICKER_TIMER_PERIOD_MS * TICKER_SUBPIXEL_SCALE) / 1000;
-    if (step_fp < 1) {
-        step_fp = 1;
-    }
-
-    ticker_offset_fp -= step_fp;
-    while (ticker_offset_fp <= -(ticker_cycle_width * TICKER_SUBPIXEL_SCALE)) {
-        ticker_offset_fp += ticker_cycle_width * TICKER_SUBPIXEL_SCALE;
-    }
-
-    lv_obj_invalidate(ticker_view);
-}
-
-static void ticker_draw_event_cb(lv_event_t *e)
-{
-    lv_obj_t *obj = lv_event_get_target_obj(e);
-    lv_layer_t *layer = lv_event_get_layer(e);
-
-    if (obj == NULL || layer == NULL || ticker_text[0] == '\0') {
-        return;
-    }
-
-    lv_area_t content_coords;
-    lv_obj_get_content_coords(obj, &content_coords);
-
-    lv_draw_label_dsc_t label_dsc;
-    lv_draw_label_dsc_init(&label_dsc);
-    lv_obj_init_draw_label_dsc(obj, LV_PART_MAIN, &label_dsc);
-    label_dsc.text = ticker_text;
-    label_dsc.font = &unifont_16;
-    label_dsc.color = UI_FG_COLOR;
-    label_dsc.text_size = ticker_text_size;
-    label_dsc.flag = LV_TEXT_FLAG_EXPAND;
-    label_dsc.text_static = 1;
-
-    int32_t base_x = content_coords.x1 + (ticker_offset_fp >> TICKER_SUBPIXEL_SHIFT);
-    int32_t base_y = content_coords.y1 + ((lv_area_get_height(&content_coords) - ticker_text_size.y) / 2);
-    lv_area_t label_coords = {
-        .x1 = base_x,
-        .y1 = base_y,
-        .x2 = base_x + ticker_text_size.x - 1,
-        .y2 = base_y + ticker_text_size.y - 1,
-    };
-    lv_draw_label(layer, &label_dsc, &label_coords);
-
-    label_coords.x1 += ticker_cycle_width;
-    label_coords.x2 += ticker_cycle_width;
-    lv_draw_label(layer, &label_dsc, &label_coords);
+    ticker_page_index = (uint16_t)((ticker_page_index + 1) % ticker_page_count);
+    ticker_apply_current_page();
 }
 
 static void mqtt_badge_draw_event_cb(lv_event_t *e)
@@ -313,78 +360,14 @@ static void bitmap_fill_rect(uint8_t *bitmap, int stride, int width, int height,
     }
 }
 
-static int triangle_edge(int x0, int y0, int x1, int y1, int x, int y)
-{
-    return (x - x0) * (y1 - y0) - (y - y0) * (x1 - x0);
-}
-
-static void bitmap_fill_triangle(
-    uint8_t *bitmap,
-    int stride,
-    int width,
-    int height,
-    int x1,
-    int y1,
-    int x2,
-    int y2,
-    int x3,
-    int y3)
-{
-    int min_x = x1;
-    int max_x = x1;
-    int min_y = y1;
-    int max_y = y1;
-
-    if (x2 < min_x) min_x = x2;
-    if (x3 < min_x) min_x = x3;
-    if (x2 > max_x) max_x = x2;
-    if (x3 > max_x) max_x = x3;
-    if (y2 < min_y) min_y = y2;
-    if (y3 < min_y) min_y = y3;
-    if (y2 > max_y) max_y = y2;
-    if (y3 > max_y) max_y = y3;
-
-    for (int row = min_y; row <= max_y; row++) {
-        for (int col = min_x; col <= max_x; col++) {
-            int w0 = triangle_edge(x1, y1, x2, y2, col, row);
-            int w1 = triangle_edge(x2, y2, x3, y3, col, row);
-            int w2 = triangle_edge(x3, y3, x1, y1, col, row);
-
-            if ((w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0)) {
-                bitmap_set_pixel(bitmap, stride, width, height, col, row);
-            }
-        }
-    }
-}
-
 static void bitmap_draw_horizontal_segment(uint8_t *bitmap, int stride, int width, int height, int x, int y, int length)
 {
-    bitmap_fill_rect(bitmap, stride, width, height, x + CLOCK_SEGMENT_TIP, y, length - (CLOCK_SEGMENT_TIP * 2), CLOCK_SEGMENT_THICKNESS);
-    bitmap_fill_triangle(
-        bitmap, stride, width, height,
-        x + CLOCK_SEGMENT_TIP, y,
-        x, y + (CLOCK_SEGMENT_THICKNESS / 2),
-        x + CLOCK_SEGMENT_TIP, y + CLOCK_SEGMENT_THICKNESS - 1);
-    bitmap_fill_triangle(
-        bitmap, stride, width, height,
-        x + length - CLOCK_SEGMENT_TIP - 1, y,
-        x + length - 1, y + (CLOCK_SEGMENT_THICKNESS / 2),
-        x + length - CLOCK_SEGMENT_TIP - 1, y + CLOCK_SEGMENT_THICKNESS - 1);
+    bitmap_fill_rect(bitmap, stride, width, height, x, y, length, CLOCK_SEGMENT_THICKNESS);
 }
 
 static void bitmap_draw_vertical_segment(uint8_t *bitmap, int stride, int width, int height, int x, int y, int length)
 {
-    bitmap_fill_rect(bitmap, stride, width, height, x, y + CLOCK_SEGMENT_TIP, CLOCK_SEGMENT_THICKNESS, length - (CLOCK_SEGMENT_TIP * 2));
-    bitmap_fill_triangle(
-        bitmap, stride, width, height,
-        x, y + CLOCK_SEGMENT_TIP,
-        x + (CLOCK_SEGMENT_THICKNESS / 2), y,
-        x + CLOCK_SEGMENT_THICKNESS - 1, y + CLOCK_SEGMENT_TIP);
-    bitmap_fill_triangle(
-        bitmap, stride, width, height,
-        x, y + length - CLOCK_SEGMENT_TIP - 1,
-        x + (CLOCK_SEGMENT_THICKNESS / 2), y + length - 1,
-        x + CLOCK_SEGMENT_THICKNESS - 1, y + length - CLOCK_SEGMENT_TIP - 1);
+    bitmap_fill_rect(bitmap, stride, width, height, x, y, CLOCK_SEGMENT_THICKNESS, length);
 }
 
 static void bitmap_draw_digit_shape(uint8_t *bitmap, int stride, int value)
@@ -395,19 +378,19 @@ static void bitmap_draw_digit_shape(uint8_t *bitmap, int stride, int value)
         bitmap_draw_horizontal_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, CLOCK_HORIZONTAL_X_OFFSET, 0, CLOCK_HORIZONTAL_LENGTH);
     }
     if (mask & (1U << 1)) {
-        bitmap_draw_vertical_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, 0, CLOCK_VERTICAL_UPPER_Y, CLOCK_VERTICAL_LENGTH);
+        bitmap_draw_vertical_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, 0, CLOCK_VERTICAL_UPPER_Y, CLOCK_VERTICAL_UPPER_LENGTH);
     }
     if (mask & (1U << 2)) {
-        bitmap_draw_vertical_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, CLOCK_DIGIT_WIDTH - CLOCK_SEGMENT_THICKNESS, CLOCK_VERTICAL_UPPER_Y, CLOCK_VERTICAL_LENGTH);
+        bitmap_draw_vertical_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, CLOCK_DIGIT_WIDTH - CLOCK_SEGMENT_THICKNESS, CLOCK_VERTICAL_UPPER_Y, CLOCK_VERTICAL_UPPER_LENGTH);
     }
     if (mask & (1U << 3)) {
         bitmap_draw_horizontal_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, CLOCK_HORIZONTAL_X_OFFSET, CLOCK_MIDDLE_SEGMENT_Y, CLOCK_HORIZONTAL_LENGTH);
     }
     if (mask & (1U << 4)) {
-        bitmap_draw_vertical_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, 0, CLOCK_VERTICAL_LOWER_Y, CLOCK_VERTICAL_LENGTH);
+        bitmap_draw_vertical_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, 0, CLOCK_VERTICAL_LOWER_Y, CLOCK_VERTICAL_LOWER_LENGTH);
     }
     if (mask & (1U << 5)) {
-        bitmap_draw_vertical_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, CLOCK_DIGIT_WIDTH - CLOCK_SEGMENT_THICKNESS, CLOCK_VERTICAL_LOWER_Y, CLOCK_VERTICAL_LENGTH);
+        bitmap_draw_vertical_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, CLOCK_DIGIT_WIDTH - CLOCK_SEGMENT_THICKNESS, CLOCK_VERTICAL_LOWER_Y, CLOCK_VERTICAL_LOWER_LENGTH);
     }
     if (mask & (1U << 6)) {
         bitmap_draw_horizontal_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, CLOCK_HORIZONTAL_X_OFFSET, CLOCK_BOTTOM_SEGMENT_Y, CLOCK_HORIZONTAL_LENGTH);
@@ -421,10 +404,8 @@ static void bitmap_draw_colon_shape(uint8_t *bitmap, int stride)
     int top_y = CLOCK_COLON_TOP_CENTER_Y;
     int bottom_y = CLOCK_COLON_BOTTOM_CENTER_Y;
 
-    bitmap_fill_triangle(bitmap, stride, CLOCK_COLON_BITMAP_WIDTH, CLOCK_COLON_BITMAP_HEIGHT, center_x, top_y - half, center_x + half, top_y, center_x, top_y + half);
-    bitmap_fill_triangle(bitmap, stride, CLOCK_COLON_BITMAP_WIDTH, CLOCK_COLON_BITMAP_HEIGHT, center_x, top_y - half, center_x - half, top_y, center_x, top_y + half);
-    bitmap_fill_triangle(bitmap, stride, CLOCK_COLON_BITMAP_WIDTH, CLOCK_COLON_BITMAP_HEIGHT, center_x, bottom_y - half, center_x + half, bottom_y, center_x, bottom_y + half);
-    bitmap_fill_triangle(bitmap, stride, CLOCK_COLON_BITMAP_WIDTH, CLOCK_COLON_BITMAP_HEIGHT, center_x, bottom_y - half, center_x - half, bottom_y, center_x, bottom_y + half);
+    bitmap_fill_rect(bitmap, stride, CLOCK_COLON_BITMAP_WIDTH, CLOCK_COLON_BITMAP_HEIGHT, center_x - half, top_y - half, CLOCK_COLON_SIZE, CLOCK_COLON_SIZE);
+    bitmap_fill_rect(bitmap, stride, CLOCK_COLON_BITMAP_WIDTH, CLOCK_COLON_BITMAP_HEIGHT, center_x - half, bottom_y - half, CLOCK_COLON_SIZE, CLOCK_COLON_SIZE);
 }
 
 static void bitmap_measure_visible_bounds(const uint8_t *bitmap, int stride, int width, int height, int *left, int *right)
@@ -514,7 +495,7 @@ static void bitmap_blit(
     }
 }
 
-static void render_clock_canvas(int hour, int minute)
+static void render_clock_canvas(int hour, int minute, bool colon_visible)
 {
     uint8_t *canvas_buf;
     uint8_t *canvas_pixels;
@@ -538,16 +519,17 @@ static void render_clock_canvas(int hour, int minute)
 
     for (int index = 0; index < 4; index++) {
         int digit = digits[index];
-        int visible_width = clock_digit_visible_right[digit] - clock_digit_visible_left[digit] + 1;
-        int centered_x = slot_x[index] + ((CLOCK_DIGIT_WIDTH - visible_width) / 2) - clock_digit_visible_left[digit];
+        int aligned_x = slot_x[index] + ((CLOCK_DIGIT_WIDTH - 1) - clock_digit_visible_right[digit]);
 
         bitmap_blit(canvas_pixels, CLOCK_CANVAS_STRIDE_BYTES, CLOCK_CANVAS_WIDTH, CLOCK_CANVAS_HEIGHT,
-            centered_x, CLOCK_DIGIT_Y,
+            aligned_x, CLOCK_DIGIT_Y,
             clock_digit_bitmaps[digit], CLOCK_DIGIT_BITMAP_STRIDE, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT);
     }
-    bitmap_blit(canvas_pixels, CLOCK_CANVAS_STRIDE_BYTES, CLOCK_CANVAS_WIDTH, CLOCK_CANVAS_HEIGHT,
-        CLOCK_COLON_CENTER_X - (CLOCK_COLON_BITMAP_WIDTH / 2), 0,
-        clock_colon_bitmap, CLOCK_COLON_BITMAP_STRIDE, CLOCK_COLON_BITMAP_WIDTH, CLOCK_COLON_BITMAP_HEIGHT);
+    if (colon_visible) {
+        bitmap_blit(canvas_pixels, CLOCK_CANVAS_STRIDE_BYTES, CLOCK_CANVAS_WIDTH, CLOCK_CANVAS_HEIGHT,
+            CLOCK_COLON_CENTER_X - (CLOCK_COLON_BITMAP_WIDTH / 2), 0,
+            clock_colon_bitmap, CLOCK_COLON_BITMAP_STRIDE, CLOCK_COLON_BITMAP_WIDTH, CLOCK_COLON_BITMAP_HEIGHT);
+    }
 
     lv_obj_invalidate(clock_canvas);
 }
@@ -611,7 +593,10 @@ void dashboard_ui_init(void)
     lv_obj_set_style_radius(ticker_view, 0, 0);
     lv_obj_set_style_text_font(ticker_view, &unifont_16, 0);
     lv_obj_set_style_text_color(ticker_view, UI_FG_COLOR, 0);
-    lv_obj_add_event_cb(ticker_view, ticker_draw_event_cb, LV_EVENT_DRAW_MAIN, NULL);
+    lv_obj_set_style_pad_all(ticker_view, 0, 0);
+    ticker_label = create_label(ticker_view, TICKER_TEXT_INSET_X, 0, TICKER_TEXT_WIDTH, LV_TEXT_ALIGN_CENTER);
+    lv_obj_set_height(ticker_label, TICKER_VIEW_HEIGHT);
+    lv_label_set_long_mode(ticker_label, LV_LABEL_LONG_CLIP);
 
     LV_DRAW_BUF_INIT_STATIC(clock_canvas_draw_buf);
     clock_canvas = lv_canvas_create(clock_view);
@@ -668,7 +653,7 @@ void dashboard_ui_init(void)
     last_clock_hour = -1;
     last_clock_minute = -1;
     if (ticker_timer == NULL) {
-        ticker_timer = lv_timer_create(ticker_timer_cb, TICKER_TIMER_PERIOD_MS, NULL);
+        ticker_timer = lv_timer_create(ticker_timer_cb, TICKER_PAGE_INTERVAL_MS, NULL);
         lv_timer_pause(ticker_timer);
     }
 
@@ -686,10 +671,13 @@ void dashboard_ui_init(void)
 
 void dashboard_ui_update_time(int hour, int minute, int second)
 {
-    if (last_clock_hour != hour || last_clock_minute != minute) {
-        render_clock_canvas(hour, minute);
+    int colon_visible = ((second & 1) == 0) ? 1 : 0;
+
+    if (last_clock_hour != hour || last_clock_minute != minute || last_clock_colon_visible != colon_visible) {
+        render_clock_canvas(hour, minute, colon_visible != 0);
         last_clock_hour = hour;
         last_clock_minute = minute;
+        last_clock_colon_visible = colon_visible;
     }
 
     if (second_label == NULL) {
@@ -763,6 +751,11 @@ void dashboard_ui_update_battery(int level)
     set_battery_level(level);
 }
 
+void dashboard_ui_update_sound_mode(int mode)
+{
+    LV_UNUSED(mode);
+}
+
 void dashboard_ui_update_mqtt_status(bool connected)
 {
     set_mqtt_level(connected);
@@ -810,17 +803,20 @@ void dashboard_ui_set_status_message(const char *message)
 
 void dashboard_ui_show_ticker_message(const char *message)
 {
-    if (ticker_view == NULL) {
+    if (ticker_view == NULL || ticker_label == NULL) {
         return;
     }
 
     ticker_prepare_text(message);
     lv_obj_clear_flag(ticker_view, LV_OBJ_FLAG_HIDDEN);
     if (ticker_timer != NULL) {
-        lv_timer_resume(ticker_timer);
-        lv_timer_ready(ticker_timer);
+        if (ticker_page_count > 1) {
+            lv_timer_resume(ticker_timer);
+            lv_timer_reset(ticker_timer);
+        } else {
+            lv_timer_pause(ticker_timer);
+        }
     }
-    lv_obj_invalidate(ticker_view);
     if (status_label != NULL) {
         lv_obj_add_flag(status_label, LV_OBJ_FLAG_HIDDEN);
     }
@@ -835,11 +831,12 @@ void dashboard_ui_hide_ticker_message(void)
     if (ticker_timer != NULL) {
         lv_timer_pause(ticker_timer);
     }
-    ticker_text[0] = '\0';
-    ticker_text_size.x = 0;
-    ticker_text_size.y = 0;
-    ticker_cycle_width = 0;
-    ticker_offset_fp = 0;
+    memset(ticker_pages, 0, sizeof(ticker_pages));
+    ticker_page_count = 0;
+    ticker_page_index = 0;
+    if (ticker_label != NULL) {
+        lv_label_set_text(ticker_label, "");
+    }
     lv_obj_add_flag(ticker_view, LV_OBJ_FLAG_HIDDEN);
     if (status_label != NULL) {
         lv_obj_clear_flag(status_label, LV_OBJ_FLAG_HIDDEN);
