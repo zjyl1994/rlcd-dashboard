@@ -70,22 +70,24 @@ static constexpr int MQTT_TICKER_TEXT_MAX_LEN = MQTT_MESSAGE_MAX_LEN + MQTT_MESS
 static constexpr int AUDIO_BEEP_SAMPLE_RATE = 24000;
 static constexpr int AUDIO_BEEP_CHANNELS = 2;
 static constexpr int AUDIO_BEEP_BITS_PER_SAMPLE = 16;
-static constexpr int AUDIO_BEEP_CLASSIC_DURATION_MS = 140;
-static constexpr int AUDIO_BEEP_CHIME_STRIKE_MS = 280;
-static constexpr int AUDIO_BEEP_CHIME_GAP_MS = 100;
-static constexpr int AUDIO_BEEP_CHIME_REPEAT_COUNT = 3;
-static constexpr int AUDIO_BEEP_CHIME_DURATION_MS =
-    (AUDIO_BEEP_CHIME_STRIKE_MS * AUDIO_BEEP_CHIME_REPEAT_COUNT)
-    + (AUDIO_BEEP_CHIME_GAP_MS * (AUDIO_BEEP_CHIME_REPEAT_COUNT - 1));
-static constexpr int AUDIO_BEEP_CLASSIC_FRAME_COUNT = (AUDIO_BEEP_SAMPLE_RATE * AUDIO_BEEP_CLASSIC_DURATION_MS) / 1000;
-static constexpr int AUDIO_BEEP_CHIME_STRIKE_FRAME_COUNT = (AUDIO_BEEP_SAMPLE_RATE * AUDIO_BEEP_CHIME_STRIKE_MS) / 1000;
-static constexpr int AUDIO_BEEP_CHIME_GAP_FRAME_COUNT = (AUDIO_BEEP_SAMPLE_RATE * AUDIO_BEEP_CHIME_GAP_MS) / 1000;
-static constexpr int AUDIO_BEEP_BUFFER_FRAME_COUNT = AUDIO_BEEP_CHIME_STRIKE_FRAME_COUNT;
 static constexpr int AUDIO_BEEP_TYPE_NONE = 0;
-static constexpr int AUDIO_BEEP_TYPE_CLASSIC = 1;
-static constexpr int AUDIO_BEEP_TYPE_CHIME = 2;
+static constexpr int AUDIO_BEEP_TYPE_1 = 1;
+static constexpr int AUDIO_BEEP_TYPE_2 = 2;
+static constexpr int AUDIO_BEEP_TYPE_3 = 3;
 static constexpr EventBits_t WIFI_CONNECTED_BIT = BIT0;
 static constexpr EventBits_t WIFI_CONNECT_FAIL_BIT = BIT1;
+
+typedef struct {
+    const uint8_t *data;
+    size_t size;
+} embedded_audio_clip_t;
+
+extern const uint8_t beep1_pcm_start[] asm("_binary_beep1_pcm_start");
+extern const uint8_t beep1_pcm_end[] asm("_binary_beep1_pcm_end");
+extern const uint8_t beep2_pcm_start[] asm("_binary_beep2_pcm_start");
+extern const uint8_t beep2_pcm_end[] asm("_binary_beep2_pcm_end");
+extern const uint8_t beep3_pcm_start[] asm("_binary_beep3_pcm_start");
+extern const uint8_t beep3_pcm_end[] asm("_binary_beep3_pcm_end");
 
 typedef struct {
     uint8_t valid;
@@ -179,7 +181,6 @@ static bool audio_beep_ready = false;
 static bool audio_beep_in_progress = false;
 static esp_codec_dev_handle_t audio_playback = NULL;
 static int audio_beep_pending_type = AUDIO_BEEP_TYPE_NONE;
-static int16_t audio_beep_pcm[AUDIO_BEEP_BUFFER_FRAME_COUNT * AUDIO_BEEP_CHANNELS] = {0};
 
 static void wifi_enter_provisioning(void);
 static void wifi_exit_provisioning(bool reconnect_saved);
@@ -191,7 +192,7 @@ static void ui_show_ticker_message(const char *title, const char *message, int t
 static void ui_hide_ticker_message(void);
 static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message_t *out_message);
 static void mqtt_handle_received_message(const char *payload);
-static size_t audio_prepare_beep_pcm(int beep_type);
+static embedded_audio_clip_t audio_get_embedded_beep(int beep_type);
 static bool audio_init(void);
 static void audio_notification_beep_task(void *arg);
 static void audio_request_notification_beep(int beep_type);
@@ -706,93 +707,33 @@ static void ui_hide_ticker_message(void)
     sync_message_input_power_lock();
 }
 
-static int audio_fill_beep_chime_strike(int start_frame, int frame_count)
+static embedded_audio_clip_t audio_get_embedded_beep(int beep_type)
 {
-    const float pi = 3.14159265358979323846f;
-    const float frequencies[] = {659.25f, 880.0f, 1109.73f, 1318.5f, 1760.0f};
-    const float gains[] = {0.52f, 0.34f, 0.24f, 0.08f, 0.05f};
-    float phases[sizeof(frequencies) / sizeof(frequencies[0])] = {0.0f};
-    const int attack_frames = (AUDIO_BEEP_SAMPLE_RATE * 6) / 1000;
-    const int tail_frames = (AUDIO_BEEP_SAMPLE_RATE * 12) / 1000;
+    switch (beep_type) {
+        case AUDIO_BEEP_TYPE_1:
+            return (embedded_audio_clip_t){
+                .data = beep1_pcm_start,
+                .size = (size_t)(beep1_pcm_end - beep1_pcm_start),
+            };
 
-    if (start_frame < 0 || frame_count <= 0 || start_frame >= AUDIO_BEEP_BUFFER_FRAME_COUNT) {
-        return start_frame;
+        case AUDIO_BEEP_TYPE_2:
+            return (embedded_audio_clip_t){
+                .data = beep2_pcm_start,
+                .size = (size_t)(beep2_pcm_end - beep2_pcm_start),
+            };
+
+        case AUDIO_BEEP_TYPE_3:
+            return (embedded_audio_clip_t){
+                .data = beep3_pcm_start,
+                .size = (size_t)(beep3_pcm_end - beep3_pcm_start),
+            };
+
+        default:
+            return (embedded_audio_clip_t){
+                .data = NULL,
+                .size = 0,
+            };
     }
-
-    int available_frames = AUDIO_BEEP_BUFFER_FRAME_COUNT - start_frame;
-    if (frame_count > available_frames) {
-        frame_count = available_frames;
-    }
-
-    for (int frame = 0; frame < frame_count; frame++) {
-        float progress = (frame_count > 1) ? ((float)frame / (float)(frame_count - 1)) : 0.0f;
-        float env = expf(-4.2f * progress);
-        float sample = 0.0f;
-        int dst_index = start_frame + frame;
-
-        if (frame < attack_frames) {
-            env *= (float)frame / (float)attack_frames;
-        }
-        if (frame >= (frame_count - tail_frames)) {
-            int tail_index = frame_count - frame;
-            if (tail_index < 0) {
-                tail_index = 0;
-            }
-            env *= (float)tail_index / (float)tail_frames;
-        }
-        if (env < 0.0f) {
-            env = 0.0f;
-        }
-
-        for (size_t tone = 0; tone < (sizeof(frequencies) / sizeof(frequencies[0])); tone++) {
-            phases[tone] += (2.0f * pi * frequencies[tone]) / (float)AUDIO_BEEP_SAMPLE_RATE;
-            if (phases[tone] > (2.0f * pi)) {
-                phases[tone] = fmodf(phases[tone], 2.0f * pi);
-            }
-            sample += sinf(phases[tone]) * gains[tone];
-        }
-
-        sample *= env * 0.24f;
-        if (sample > 1.0f) {
-            sample = 1.0f;
-        } else if (sample < -1.0f) {
-            sample = -1.0f;
-        }
-
-        int16_t pcm = (int16_t)(sample * 32767.0f);
-        audio_beep_pcm[dst_index * 2] = pcm;
-        audio_beep_pcm[(dst_index * 2) + 1] = pcm;
-    }
-
-    return start_frame + frame_count;
-}
-
-static size_t audio_prepare_beep_pcm(int beep_type)
-{
-    const float pi = 3.14159265358979323846f;
-
-    memset(audio_beep_pcm, 0, sizeof(audio_beep_pcm));
-
-    if (beep_type == AUDIO_BEEP_TYPE_CHIME) {
-        int frame_cursor = 0;
-
-        frame_cursor = audio_fill_beep_chime_strike(frame_cursor, AUDIO_BEEP_CHIME_STRIKE_FRAME_COUNT);
-        return (size_t)frame_cursor * AUDIO_BEEP_CHANNELS * sizeof(int16_t);
-    }
-
-    for (int frame = 0; frame < AUDIO_BEEP_CLASSIC_FRAME_COUNT; frame++) {
-        float t = (float)frame / (float)AUDIO_BEEP_SAMPLE_RATE;
-        float progress = (float)frame / (float)AUDIO_BEEP_CLASSIC_FRAME_COUNT;
-        float env = (1.0f - progress);
-        float freq = (frame < (AUDIO_BEEP_CLASSIC_FRAME_COUNT / 2)) ? 1760.0f : 2349.0f;
-        float sample = sinf(2.0f * pi * freq * t) * env * 0.32f;
-        int16_t pcm = (int16_t)(sample * 32767.0f);
-
-        audio_beep_pcm[frame * 2] = pcm;
-        audio_beep_pcm[(frame * 2) + 1] = pcm;
-    }
-
-    return (size_t)AUDIO_BEEP_CLASSIC_FRAME_COUNT * AUDIO_BEEP_CHANNELS * sizeof(int16_t);
 }
 
 static bool audio_init(void)
@@ -836,34 +777,16 @@ static bool audio_init(void)
 static void audio_notification_beep_task(void *arg)
 {
     LV_UNUSED(arg);
-    int local_beep_type = AUDIO_BEEP_TYPE_CLASSIC;
+    int local_beep_type = AUDIO_BEEP_TYPE_NONE;
 
     state_lock();
-    if (audio_beep_pending_type == AUDIO_BEEP_TYPE_CHIME) {
-        local_beep_type = AUDIO_BEEP_TYPE_CHIME;
-    }
+    local_beep_type = audio_beep_pending_type;
     state_unlock();
 
     if (audio_init()) {
-        if (local_beep_type == AUDIO_BEEP_TYPE_CHIME) {
-            size_t strike_bytes = audio_prepare_beep_pcm(AUDIO_BEEP_TYPE_CHIME);
-            size_t gap_bytes = (size_t)AUDIO_BEEP_CHIME_GAP_FRAME_COUNT * AUDIO_BEEP_CHANNELS * sizeof(int16_t);
-
-            for (int strike = 0; strike < AUDIO_BEEP_CHIME_REPEAT_COUNT; strike++) {
-                if (strike_bytes > 0) {
-                    esp_codec_dev_write(audio_playback, audio_beep_pcm, strike_bytes);
-                }
-
-                if (strike < (AUDIO_BEEP_CHIME_REPEAT_COUNT - 1) && gap_bytes > 0) {
-                    memset(audio_beep_pcm, 0, gap_bytes);
-                    esp_codec_dev_write(audio_playback, audio_beep_pcm, gap_bytes);
-                }
-            }
-        } else {
-            size_t pcm_bytes = audio_prepare_beep_pcm(local_beep_type);
-            if (pcm_bytes > 0) {
-                esp_codec_dev_write(audio_playback, audio_beep_pcm, pcm_bytes);
-            }
+        embedded_audio_clip_t clip = audio_get_embedded_beep(local_beep_type);
+        if (clip.data != NULL && clip.size > 0) {
+            esp_codec_dev_write(audio_playback, (void *)clip.data, clip.size);
         }
     }
 
@@ -878,11 +801,11 @@ static void audio_notification_beep_task(void *arg)
 static void audio_request_notification_beep(int beep_type)
 {
     state_lock();
-    if (audio_beep_in_progress) {
+    if (audio_beep_in_progress || beep_type <= AUDIO_BEEP_TYPE_NONE || beep_type > AUDIO_BEEP_TYPE_3) {
         state_unlock();
         return;
     }
-    audio_beep_pending_type = (beep_type == AUDIO_BEEP_TYPE_CHIME) ? AUDIO_BEEP_TYPE_CHIME : AUDIO_BEEP_TYPE_CLASSIC;
+    audio_beep_pending_type = beep_type;
     audio_beep_in_progress = true;
     state_unlock();
 
@@ -950,12 +873,12 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
 
     if (beep_item != NULL) {
         if (cJSON_IsBool(beep_item)) {
-            out_message->beep_type = cJSON_IsTrue(beep_item) ? AUDIO_BEEP_TYPE_CLASSIC : AUDIO_BEEP_TYPE_NONE;
+            out_message->beep_type = cJSON_IsTrue(beep_item) ? AUDIO_BEEP_TYPE_1 : AUDIO_BEEP_TYPE_NONE;
         } else if (cJSON_IsNumber(beep_item)) {
-            if (beep_item->valueint == AUDIO_BEEP_TYPE_CHIME) {
-                out_message->beep_type = AUDIO_BEEP_TYPE_CHIME;
-            } else if (beep_item->valueint != 0) {
-                out_message->beep_type = AUDIO_BEEP_TYPE_CLASSIC;
+            if (beep_item->valueint >= AUDIO_BEEP_TYPE_1 && beep_item->valueint <= AUDIO_BEEP_TYPE_3) {
+                out_message->beep_type = beep_item->valueint;
+            } else {
+                out_message->beep_type = AUDIO_BEEP_TYPE_NONE;
             }
         } else {
             cJSON_Delete(root);
