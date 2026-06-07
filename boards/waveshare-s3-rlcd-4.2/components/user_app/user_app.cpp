@@ -66,11 +66,24 @@ static constexpr int STATUS_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MESSAGE_MAX_LEN = 512;
 static constexpr int MQTT_MESSAGE_TITLE_MAX_LEN = 64;
+static constexpr int MQTT_TICKER_TEXT_MAX_LEN = MQTT_MESSAGE_MAX_LEN + MQTT_MESSAGE_TITLE_MAX_LEN + 16;
 static constexpr int AUDIO_BEEP_SAMPLE_RATE = 24000;
 static constexpr int AUDIO_BEEP_CHANNELS = 2;
 static constexpr int AUDIO_BEEP_BITS_PER_SAMPLE = 16;
-static constexpr int AUDIO_BEEP_DURATION_MS = 140;
-static constexpr int AUDIO_BEEP_FRAME_COUNT = (AUDIO_BEEP_SAMPLE_RATE * AUDIO_BEEP_DURATION_MS) / 1000;
+static constexpr int AUDIO_BEEP_CLASSIC_DURATION_MS = 140;
+static constexpr int AUDIO_BEEP_CHIME_STRIKE_MS = 280;
+static constexpr int AUDIO_BEEP_CHIME_GAP_MS = 100;
+static constexpr int AUDIO_BEEP_CHIME_REPEAT_COUNT = 3;
+static constexpr int AUDIO_BEEP_CHIME_DURATION_MS =
+    (AUDIO_BEEP_CHIME_STRIKE_MS * AUDIO_BEEP_CHIME_REPEAT_COUNT)
+    + (AUDIO_BEEP_CHIME_GAP_MS * (AUDIO_BEEP_CHIME_REPEAT_COUNT - 1));
+static constexpr int AUDIO_BEEP_CLASSIC_FRAME_COUNT = (AUDIO_BEEP_SAMPLE_RATE * AUDIO_BEEP_CLASSIC_DURATION_MS) / 1000;
+static constexpr int AUDIO_BEEP_CHIME_STRIKE_FRAME_COUNT = (AUDIO_BEEP_SAMPLE_RATE * AUDIO_BEEP_CHIME_STRIKE_MS) / 1000;
+static constexpr int AUDIO_BEEP_CHIME_GAP_FRAME_COUNT = (AUDIO_BEEP_SAMPLE_RATE * AUDIO_BEEP_CHIME_GAP_MS) / 1000;
+static constexpr int AUDIO_BEEP_BUFFER_FRAME_COUNT = AUDIO_BEEP_CHIME_STRIKE_FRAME_COUNT;
+static constexpr int AUDIO_BEEP_TYPE_NONE = 0;
+static constexpr int AUDIO_BEEP_TYPE_CLASSIC = 1;
+static constexpr int AUDIO_BEEP_TYPE_CHIME = 2;
 static constexpr EventBits_t WIFI_CONNECTED_BIT = BIT0;
 static constexpr EventBits_t WIFI_CONNECT_FAIL_BIT = BIT1;
 
@@ -103,7 +116,7 @@ typedef struct {
 typedef struct {
     int type;
     int timeout_seconds;
-    bool beep;
+    int beep_type;
     char title[MQTT_MESSAGE_TITLE_MAX_LEN + 1];
     char content[MQTT_MESSAGE_MAX_LEN + 1];
 } mqtt_overlay_message_t;
@@ -139,6 +152,8 @@ static bool boot_button_long_handled = false;
 static bool key_button_pressed = false;
 static bool message_overlay_active = false;
 static bool message_overlay_requires_key = false;
+static bool ticker_message_active = false;
+static bool ticker_message_requires_key = false;
 static TickType_t boot_button_press_ticks = 0;
 static esp_pm_lock_handle_t overlay_input_pm_lock = NULL;
 static bool overlay_input_pm_lock_held = false;
@@ -148,6 +163,7 @@ static char provision_ap_ssid[33] = {0};
 static char provision_ap_ip[16] = {0};
 static int64_t status_message_expire_at_us = 0;
 static int64_t message_overlay_expire_at_us = 0;
+static int64_t ticker_message_expire_at_us = 0;
 static esp_mqtt_client_handle_t mqtt_client = NULL;
 static char mqtt_broker_uri[192] = {0};
 static char mqtt_message_topic[128] = {0};
@@ -162,7 +178,8 @@ static bool mqtt_message_topic_match = false;
 static bool audio_beep_ready = false;
 static bool audio_beep_in_progress = false;
 static esp_codec_dev_handle_t audio_playback = NULL;
-static int16_t audio_beep_pcm[AUDIO_BEEP_FRAME_COUNT * AUDIO_BEEP_CHANNELS] = {0};
+static int audio_beep_pending_type = AUDIO_BEEP_TYPE_NONE;
+static int16_t audio_beep_pcm[AUDIO_BEEP_BUFFER_FRAME_COUNT * AUDIO_BEEP_CHANNELS] = {0};
 
 static void wifi_enter_provisioning(void);
 static void wifi_exit_provisioning(bool reconnect_saved);
@@ -170,17 +187,20 @@ static bool wifi_connect_saved_networks(bool enter_provision_on_fail);
 static bool schedule_provisioning_action(bool enter, bool reconnect_saved);
 static void ui_show_message_overlay(const char *title, const char *message, int timeout_seconds);
 static void ui_hide_message_overlay(void);
+static void ui_show_ticker_message(const char *title, const char *message, int timeout_seconds);
+static void ui_hide_ticker_message(void);
 static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message_t *out_message);
 static void mqtt_handle_received_message(const char *payload);
-static void audio_prepare_beep_pcm(void);
+static size_t audio_prepare_beep_pcm(int beep_type);
 static bool audio_init(void);
 static void audio_notification_beep_task(void *arg);
-static void audio_request_notification_beep(void);
+static void audio_request_notification_beep(int beep_type);
 static void ui_set_default_status_message_locked(void);
 static bool sync_system_time_from_rtc(void);
 static void wifi_apply_power_save(bool connected, bool provisioning);
 static void power_management_init(void);
 static void overlay_input_power_lock_set(bool active);
+static void sync_message_input_power_lock(void);
 
 static uint32_t provision_ip_addr(void)
 {
@@ -389,6 +409,17 @@ static void overlay_input_power_lock_set(bool active)
 #else
     LV_UNUSED(active);
 #endif
+}
+
+static void sync_message_input_power_lock(void)
+{
+    bool should_hold_lock;
+
+    state_lock();
+    should_hold_lock = message_overlay_requires_key || ticker_message_active;
+    state_unlock();
+
+    overlay_input_power_lock_set(should_hold_lock);
 }
 
 static void adjust_rtc_timezone_offset(int old_offset, int new_offset)
@@ -612,7 +643,7 @@ static void ui_show_message_overlay(const char *title, const char *message, int 
     }
     state_unlock();
 
-    overlay_input_power_lock_set(timeout_seconds == 0);
+    sync_message_input_power_lock();
 }
 
 static void ui_hide_message_overlay(void)
@@ -628,23 +659,132 @@ static void ui_hide_message_overlay(void)
     message_overlay_expire_at_us = 0;
     state_unlock();
 
-    overlay_input_power_lock_set(false);
+    sync_message_input_power_lock();
 }
 
-static void audio_prepare_beep_pcm(void)
+static void ui_show_ticker_message(const char *title, const char *message, int timeout_seconds)
 {
-    static bool prepared = false;
-    const float pi = 3.14159265358979323846f;
+    char ticker_text[MQTT_TICKER_TEXT_MAX_LEN];
 
-    if (prepared) {
-        return;
+    if (title != NULL && title[0] != '\0') {
+        snprintf(ticker_text, sizeof(ticker_text), "【%s】%s   ", title, (message != NULL) ? message : "");
+    } else {
+        snprintf(ticker_text, sizeof(ticker_text), "%s   ", (message != NULL) ? message : "");
     }
 
-    for (int frame = 0; frame < AUDIO_BEEP_FRAME_COUNT; frame++) {
+    if (Lvgl_lock(-1)) {
+        dashboard_ui_show_ticker_message(ticker_text);
+        Lvgl_unlock();
+    }
+
+    state_lock();
+    ticker_message_active = true;
+    ticker_message_requires_key = (timeout_seconds == 0);
+    if (timeout_seconds > 0) {
+        ticker_message_expire_at_us = esp_timer_get_time() + ((int64_t)timeout_seconds * 1000000LL);
+    } else {
+        ticker_message_expire_at_us = 0;
+    }
+    state_unlock();
+
+    sync_message_input_power_lock();
+}
+
+static void ui_hide_ticker_message(void)
+{
+    if (Lvgl_lock(-1)) {
+        dashboard_ui_hide_ticker_message();
+        Lvgl_unlock();
+    }
+
+    state_lock();
+    ticker_message_active = false;
+    ticker_message_requires_key = false;
+    ticker_message_expire_at_us = 0;
+    state_unlock();
+
+    sync_message_input_power_lock();
+}
+
+static int audio_fill_beep_chime_strike(int start_frame, int frame_count)
+{
+    const float pi = 3.14159265358979323846f;
+    const float frequencies[] = {659.25f, 880.0f, 1109.73f, 1318.5f, 1760.0f};
+    const float gains[] = {0.52f, 0.34f, 0.24f, 0.08f, 0.05f};
+    float phases[sizeof(frequencies) / sizeof(frequencies[0])] = {0.0f};
+    const int attack_frames = (AUDIO_BEEP_SAMPLE_RATE * 6) / 1000;
+    const int tail_frames = (AUDIO_BEEP_SAMPLE_RATE * 12) / 1000;
+
+    if (start_frame < 0 || frame_count <= 0 || start_frame >= AUDIO_BEEP_BUFFER_FRAME_COUNT) {
+        return start_frame;
+    }
+
+    int available_frames = AUDIO_BEEP_BUFFER_FRAME_COUNT - start_frame;
+    if (frame_count > available_frames) {
+        frame_count = available_frames;
+    }
+
+    for (int frame = 0; frame < frame_count; frame++) {
+        float progress = (frame_count > 1) ? ((float)frame / (float)(frame_count - 1)) : 0.0f;
+        float env = expf(-4.2f * progress);
+        float sample = 0.0f;
+        int dst_index = start_frame + frame;
+
+        if (frame < attack_frames) {
+            env *= (float)frame / (float)attack_frames;
+        }
+        if (frame >= (frame_count - tail_frames)) {
+            int tail_index = frame_count - frame;
+            if (tail_index < 0) {
+                tail_index = 0;
+            }
+            env *= (float)tail_index / (float)tail_frames;
+        }
+        if (env < 0.0f) {
+            env = 0.0f;
+        }
+
+        for (size_t tone = 0; tone < (sizeof(frequencies) / sizeof(frequencies[0])); tone++) {
+            phases[tone] += (2.0f * pi * frequencies[tone]) / (float)AUDIO_BEEP_SAMPLE_RATE;
+            if (phases[tone] > (2.0f * pi)) {
+                phases[tone] = fmodf(phases[tone], 2.0f * pi);
+            }
+            sample += sinf(phases[tone]) * gains[tone];
+        }
+
+        sample *= env * 0.24f;
+        if (sample > 1.0f) {
+            sample = 1.0f;
+        } else if (sample < -1.0f) {
+            sample = -1.0f;
+        }
+
+        int16_t pcm = (int16_t)(sample * 32767.0f);
+        audio_beep_pcm[dst_index * 2] = pcm;
+        audio_beep_pcm[(dst_index * 2) + 1] = pcm;
+    }
+
+    return start_frame + frame_count;
+}
+
+static size_t audio_prepare_beep_pcm(int beep_type)
+{
+    const float pi = 3.14159265358979323846f;
+
+    memset(audio_beep_pcm, 0, sizeof(audio_beep_pcm));
+
+    if (beep_type == AUDIO_BEEP_TYPE_CHIME) {
+        int frame_cursor = 0;
+
+        frame_cursor = audio_fill_beep_chime_strike(frame_cursor, AUDIO_BEEP_CHIME_STRIKE_FRAME_COUNT);
+        return (size_t)frame_cursor * AUDIO_BEEP_CHANNELS * sizeof(int16_t);
+    }
+
+    for (int frame = 0; frame < AUDIO_BEEP_CLASSIC_FRAME_COUNT; frame++) {
         float t = (float)frame / (float)AUDIO_BEEP_SAMPLE_RATE;
-        float progress = (float)frame / (float)AUDIO_BEEP_FRAME_COUNT;
+        float progress = (float)frame / (float)AUDIO_BEEP_CLASSIC_FRAME_COUNT;
         float env = (1.0f - progress);
-        float freq = (frame < (AUDIO_BEEP_FRAME_COUNT / 2)) ? 1760.0f : 2349.0f;
+        float freq = (frame < (AUDIO_BEEP_CLASSIC_FRAME_COUNT / 2)) ? 1760.0f : 2349.0f;
         float sample = sinf(2.0f * pi * freq * t) * env * 0.32f;
         int16_t pcm = (int16_t)(sample * 32767.0f);
 
@@ -652,7 +792,7 @@ static void audio_prepare_beep_pcm(void)
         audio_beep_pcm[(frame * 2) + 1] = pcm;
     }
 
-    prepared = true;
+    return (size_t)AUDIO_BEEP_CLASSIC_FRAME_COUNT * AUDIO_BEEP_CHANNELS * sizeof(int16_t);
 }
 
 static bool audio_init(void)
@@ -689,7 +829,6 @@ static bool audio_init(void)
     }
 
     esp_codec_dev_set_out_vol(audio_playback, 100);
-    audio_prepare_beep_pcm();
     audio_beep_ready = true;
     return true;
 }
@@ -697,25 +836,53 @@ static bool audio_init(void)
 static void audio_notification_beep_task(void *arg)
 {
     LV_UNUSED(arg);
+    int local_beep_type = AUDIO_BEEP_TYPE_CLASSIC;
+
+    state_lock();
+    if (audio_beep_pending_type == AUDIO_BEEP_TYPE_CHIME) {
+        local_beep_type = AUDIO_BEEP_TYPE_CHIME;
+    }
+    state_unlock();
 
     if (audio_init()) {
-        esp_codec_dev_write(audio_playback, audio_beep_pcm, sizeof(audio_beep_pcm));
+        if (local_beep_type == AUDIO_BEEP_TYPE_CHIME) {
+            size_t strike_bytes = audio_prepare_beep_pcm(AUDIO_BEEP_TYPE_CHIME);
+            size_t gap_bytes = (size_t)AUDIO_BEEP_CHIME_GAP_FRAME_COUNT * AUDIO_BEEP_CHANNELS * sizeof(int16_t);
+
+            for (int strike = 0; strike < AUDIO_BEEP_CHIME_REPEAT_COUNT; strike++) {
+                if (strike_bytes > 0) {
+                    esp_codec_dev_write(audio_playback, audio_beep_pcm, strike_bytes);
+                }
+
+                if (strike < (AUDIO_BEEP_CHIME_REPEAT_COUNT - 1) && gap_bytes > 0) {
+                    memset(audio_beep_pcm, 0, gap_bytes);
+                    esp_codec_dev_write(audio_playback, audio_beep_pcm, gap_bytes);
+                }
+            }
+        } else {
+            size_t pcm_bytes = audio_prepare_beep_pcm(local_beep_type);
+            if (pcm_bytes > 0) {
+                esp_codec_dev_write(audio_playback, audio_beep_pcm, pcm_bytes);
+            }
+        }
     }
 
     state_lock();
     audio_beep_ready = (audio_playback != NULL);
+    audio_beep_pending_type = AUDIO_BEEP_TYPE_NONE;
     audio_beep_in_progress = false;
     state_unlock();
     vTaskDelete(NULL);
 }
 
-static void audio_request_notification_beep(void)
+static void audio_request_notification_beep(int beep_type)
 {
     state_lock();
     if (audio_beep_in_progress) {
         state_unlock();
         return;
     }
+    audio_beep_pending_type = (beep_type == AUDIO_BEEP_TYPE_CHIME) ? AUDIO_BEEP_TYPE_CHIME : AUDIO_BEEP_TYPE_CLASSIC;
     audio_beep_in_progress = true;
     state_unlock();
 
@@ -743,7 +910,7 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
     memset(out_message, 0, sizeof(*out_message));
     out_message->type = -1;
     out_message->timeout_seconds = MQTT_MESSAGE_TIMEOUT_MS / 1000;
-    out_message->beep = false;
+    out_message->beep_type = AUDIO_BEEP_TYPE_NONE;
 
     root = cJSON_Parse(payload);
     if (root == NULL || !cJSON_IsObject(root)) {
@@ -783,9 +950,13 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
 
     if (beep_item != NULL) {
         if (cJSON_IsBool(beep_item)) {
-            out_message->beep = cJSON_IsTrue(beep_item);
+            out_message->beep_type = cJSON_IsTrue(beep_item) ? AUDIO_BEEP_TYPE_CLASSIC : AUDIO_BEEP_TYPE_NONE;
         } else if (cJSON_IsNumber(beep_item)) {
-            out_message->beep = (beep_item->valueint != 0);
+            if (beep_item->valueint == AUDIO_BEEP_TYPE_CHIME) {
+                out_message->beep_type = AUDIO_BEEP_TYPE_CHIME;
+            } else if (beep_item->valueint != 0) {
+                out_message->beep_type = AUDIO_BEEP_TYPE_CLASSIC;
+            }
         } else {
             cJSON_Delete(root);
             return false;
@@ -806,15 +977,23 @@ static void mqtt_handle_received_message(const char *payload)
         return;
     }
 
-    if (message.type != 1) {
-        ui_set_statusf("Unsupported MQTT type: %d", message.type);
-        return;
+    if (message.beep_type != AUDIO_BEEP_TYPE_NONE) {
+        audio_request_notification_beep(message.beep_type);
     }
 
-    if (message.beep) {
-        audio_request_notification_beep();
+    switch (message.type) {
+        case 1:
+            ui_show_message_overlay(message.title, message.content, message.timeout_seconds);
+            break;
+
+        case 2:
+            ui_show_ticker_message(message.title, message.content, message.timeout_seconds);
+            break;
+
+        default:
+            ui_set_statusf("Unsupported MQTT type: %d", message.type);
+            break;
     }
-    ui_show_message_overlay(message.title, message.content, message.timeout_seconds);
 }
 
 static void html_escape(const char *src, char *dst, size_t dst_size)
@@ -2434,6 +2613,7 @@ static void ui_housekeeping_task(void *arg)
     while (1) {
         bool clear_status = false;
         bool hide_overlay = false;
+        bool hide_ticker = false;
         int64_t now = esp_timer_get_time();
 
         state_lock();
@@ -2445,6 +2625,10 @@ static void ui_housekeeping_task(void *arg)
             message_overlay_expire_at_us = 0;
             hide_overlay = true;
         }
+        if (ticker_message_expire_at_us > 0 && now >= ticker_message_expire_at_us) {
+            ticker_message_expire_at_us = 0;
+            hide_ticker = true;
+        }
         state_unlock();
 
         if (clear_status) {
@@ -2453,6 +2637,10 @@ static void ui_housekeeping_task(void *arg)
 
         if (hide_overlay) {
             ui_hide_message_overlay();
+        }
+
+        if (hide_ticker) {
+            ui_hide_ticker_message();
         }
 
         vTaskDelay(pdMS_TO_TICKS(250));
@@ -2605,6 +2793,8 @@ static void boot_button_task(void *arg)
         if (key_pressed_now) {
             bool local_overlay_active;
             bool local_overlay_requires_key;
+            bool local_ticker_active;
+            bool local_ticker_requires_key;
 
             if (!key_button_pressed) {
                 key_button_pressed = true;
@@ -2612,10 +2802,14 @@ static void boot_button_task(void *arg)
             state_lock();
             local_overlay_active = message_overlay_active;
             local_overlay_requires_key = message_overlay_requires_key;
+            local_ticker_active = ticker_message_active;
+            local_ticker_requires_key = ticker_message_requires_key;
             state_unlock();
 
             if (local_overlay_active && local_overlay_requires_key) {
                 ui_hide_message_overlay();
+            } else if (!local_overlay_active && local_ticker_active && local_ticker_requires_key) {
+                ui_hide_ticker_message();
             }
         } else if (!key_pressed_now) {
             key_button_pressed = false;
@@ -2658,7 +2852,7 @@ static void network_startup_task(void *arg)
     if (wifi_store_count_snapshot() == 0) {
         wifi_enter_provisioning();
     } else {
-        wifi_connect_saved_networks(true);
+        wifi_connect_saved_networks(false);
     }
 
     vTaskDelete(NULL);

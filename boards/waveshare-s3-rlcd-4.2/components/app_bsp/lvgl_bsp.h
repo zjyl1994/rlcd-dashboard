@@ -4,8 +4,8 @@
 
 #define LVGL_TICK_PERIOD_MS    5
 #define LVGL_TASK_MAX_DELAY_MS 500
-#define LVGL_TASK_MIN_DELAY_MS 50
-#define LVGL_PARTIAL_BUF_LINES 40
+#define LVGL_TASK_MIN_DELAY_MS 5
+#define LVGL_PARTIAL_BUF_LINES 120
 
 typedef void (*DispFlushCb)(lv_display_t * disp, const lv_area_t * area, uint8_t * color_p);
 
