@@ -1,1 +1,18 @@
-__pycache__
+# ESP-IDF generated output
+**/build/
+**/.cache/
+**/managed_components/
+**/sdkconfig.old
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Editor / OS junk
+.vscode/
+.idea/
+**/.DS_Store
+**/Thumbs.db
+**/*.swp
+**/*.swo

@@ -1,0 +1,27 @@
+menu "Dashboard Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default ""
+        help
+            Pre-configured WiFi SSID. Leave empty to use provisioning.
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default ""
+        help
+            Pre-configured WiFi password.
+
+    config LONG_PRESS_MS
+        int "BOOT button long press time (ms)"
+        default 3000
+        help
+            Duration in milliseconds for BOOT button long press to trigger re-provisioning.
+
+    config NTP_SYNC_INTERVAL_MIN
+        int "NTP re-sync interval (minutes)"
+        default 720
+        help
+            Interval in minutes between NTP time syncs.
+
+endmenu
