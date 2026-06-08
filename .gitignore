@@ -21,3 +21,4 @@
 config.json
 # Binary
 server/rlcdsrv
+.sdup.toml
