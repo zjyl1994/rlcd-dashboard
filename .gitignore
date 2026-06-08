@@ -19,3 +19,5 @@
 
 # Config
 config.json
+# Binary
+server/rlcdsrv
