@@ -10,10 +10,17 @@ import (
 	"github.com/zjyl1994/rlcd-dashboard/server/vars"
 )
 
+const (
+	maxTitleLen   = 64
+	maxContentLen = 512
+)
+
 type NotifyOpencodeRequest struct {
-	Title   string `json:"title" form:"title" binding:"required"`
-	Content string `json:"content" form:"content" binding:"required"`
-	Type    string `json:"type" form:"type" binding:"required"`
+	Title   string `json:"title" binding:"required"`
+	Content string `json:"content" binding:"required"`
+	Type    *int   `json:"type"`
+	Beep    *int   `json:"beep"`
+	Timeout *int   `json:"timeout"`
 }
 
 type NotifyMessage struct {
@@ -36,7 +43,7 @@ func NotifyOpencodeHandler(c *gin.Context) {
 	}
 
 	var req NotifyOpencodeRequest
-	if err := c.ShouldBind(&req); err != nil {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -46,10 +53,43 @@ func NotifyOpencodeHandler(c *gin.Context) {
 		return
 	}
 
-	beep, timeout := computeBeepAndTimeout(req.Type)
+	if len(req.Title) > maxTitleLen {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("title too long (max %d bytes)", maxTitleLen)})
+		return
+	}
+	if len(req.Content) > maxContentLen {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("content too long (max %d bytes)", maxContentLen)})
+		return
+	}
+
+	msgType := 1
+	if req.Type != nil {
+		msgType = *req.Type
+	}
+	if msgType < 1 || msgType > 2 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "type must be 1-2"})
+		return
+	}
+
+	beep := 0
+	timeout := 15
+	if req.Beep != nil {
+		beep = *req.Beep
+	}
+	if req.Timeout != nil {
+		timeout = *req.Timeout
+	}
+	if beep < 0 || beep > 3 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "beep must be 0-3"})
+		return
+	}
+	if timeout < 0 || timeout > 60 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "timeout must be 0-60"})
+		return
+	}
 
 	msg := NotifyMessage{
-		Type:    1,
+		Type:    msgType,
 		Title:   req.Title,
 		Content: req.Content,
 		Beep:    beep,
@@ -81,17 +121,4 @@ func validateTopicName(name string) error {
 		return fmt.Errorf("name must not contain '/'")
 	}
 	return nil
-}
-
-func computeBeepAndTimeout(typeStr string) (beep int, timeout int) {
-	switch typeStr {
-	case "info":
-		return 1, 30
-	case "warn":
-		return 1, 30
-	case "error":
-		return 1, 30
-	default:
-		return 1, 30
-	}
 }
