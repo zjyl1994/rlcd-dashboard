@@ -1,5 +1,12 @@
 menu "Dashboard Configuration"
 
+    config RLCD_PRODUCTION_BUILD
+        bool "Production build mode"
+        default n
+        help
+            Enable production power-saving behavior such as automatic light sleep.
+            Keep this disabled during development to preserve a stable USB flashing/debug link.
+
     config WIFI_SSID
         string "WiFi SSID"
         default ""

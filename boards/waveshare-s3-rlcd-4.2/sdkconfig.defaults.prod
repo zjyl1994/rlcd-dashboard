@@ -1,0 +1,2 @@
+# Production build profile
+CONFIG_RLCD_PRODUCTION_BUILD=y

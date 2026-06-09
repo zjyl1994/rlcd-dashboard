@@ -74,10 +74,23 @@ static constexpr int MQTT_MAINT_DISCONNECTED_PERIOD_MS = 5000;
 static constexpr int AUDIO_BEEP_SAMPLE_RATE = 24000;
 static constexpr int AUDIO_BEEP_CHANNELS = 2;
 static constexpr int AUDIO_BEEP_BITS_PER_SAMPLE = 16;
+static constexpr uint32_t AUDIO_BEEP_EDGE_FADE_MS = 8;
+static constexpr size_t AUDIO_BEEP_FRAME_BYTES = AUDIO_BEEP_CHANNELS * (AUDIO_BEEP_BITS_PER_SAMPLE / 8);
+static constexpr size_t AUDIO_BEEP_PCM_CHUNK_BYTES = 1024;
+static constexpr size_t AUDIO_BEEP_SILENCE_CHUNK_BYTES = 1024;
 static constexpr int AUDIO_BEEP_TYPE_NONE = 0;
 static constexpr int AUDIO_BEEP_TYPE_1 = 1;
 static constexpr int AUDIO_BEEP_TYPE_2 = 2;
 static constexpr int AUDIO_BEEP_TYPE_3 = 3;
+static constexpr int AUDIO_BEEP_TYPE_4 = 4;
+static constexpr int AUDIO_BEEP_TYPE_5 = 5;
+static constexpr int AUDIO_BEEP_TYPE_6 = 6;
+static constexpr int AUDIO_BEEP_ASSET_NONE = 0;
+static constexpr int AUDIO_BEEP_ASSET_1 = 1;
+static constexpr int AUDIO_BEEP_ASSET_2 = 2;
+static constexpr int AUDIO_BEEP_ASSET_4 = 4;
+static constexpr int AUDIO_BEEP_ASSET_5 = 5;
+static constexpr int AUDIO_BEEP_ASSET_6 = 6;
 static constexpr uint8_t AUDIO_SOUND_MODE_MUTE = 0;
 static constexpr uint8_t AUDIO_SOUND_MODE_NORMAL = 1;
 static constexpr uint8_t AUDIO_SOUND_MODE_LOUD = 2;
@@ -95,16 +108,38 @@ static constexpr EventBits_t WIFI_CONNECTED_BIT = BIT0;
 static constexpr EventBits_t WIFI_CONNECT_FAIL_BIT = BIT1;
 
 typedef struct {
+    uint8_t asset_id;
+    uint8_t repeat_count;
+    uint16_t gap_ms;
+} audio_beep_pattern_t;
+
+typedef struct {
     const uint8_t *data;
     size_t size;
+    uint8_t repeat_count;
+    uint16_t gap_ms;
 } embedded_audio_clip_t;
+
+static constexpr audio_beep_pattern_t AUDIO_BEEP_PATTERNS[] = {
+    {AUDIO_BEEP_ASSET_NONE, 0, 0},
+    {AUDIO_BEEP_ASSET_1, 1, 0},
+    {AUDIO_BEEP_ASSET_2, 4, 500},
+    {AUDIO_BEEP_ASSET_2, 4, 0},
+    {AUDIO_BEEP_ASSET_4, 1, 0},
+    {AUDIO_BEEP_ASSET_5, 1, 0},
+    {AUDIO_BEEP_ASSET_6, 1, 0},
+};
 
 extern const uint8_t beep1_pcm_start[] asm("_binary_beep1_pcm_start");
 extern const uint8_t beep1_pcm_end[] asm("_binary_beep1_pcm_end");
 extern const uint8_t beep2_pcm_start[] asm("_binary_beep2_pcm_start");
 extern const uint8_t beep2_pcm_end[] asm("_binary_beep2_pcm_end");
-extern const uint8_t beep3_pcm_start[] asm("_binary_beep3_pcm_start");
-extern const uint8_t beep3_pcm_end[] asm("_binary_beep3_pcm_end");
+extern const uint8_t beep4_pcm_start[] asm("_binary_beep4_pcm_start");
+extern const uint8_t beep4_pcm_end[] asm("_binary_beep4_pcm_end");
+extern const uint8_t beep5_pcm_start[] asm("_binary_beep5_pcm_start");
+extern const uint8_t beep5_pcm_end[] asm("_binary_beep5_pcm_end");
+extern const uint8_t beep6_pcm_start[] asm("_binary_beep6_pcm_start");
+extern const uint8_t beep6_pcm_end[] asm("_binary_beep6_pcm_end");
 
 typedef struct {
     uint8_t valid;
@@ -219,11 +254,16 @@ static bool schedule_provisioning_action(bool enter, bool reconnect_saved);
 static void device_config_snapshot(device_config_t *config);
 static void ui_show_message_overlay(const char *title, const char *message, int timeout_seconds);
 static void ui_hide_message_overlay(void);
+static void ui_format_ticker_message(const char *title, const char *message, char *ticker_text, size_t ticker_text_size);
 static void ui_show_ticker_message(const char *title, const char *message, int timeout_seconds);
+static void ui_show_marquee_ticker_message(const char *title, const char *message, int timeout_seconds);
 static void ui_hide_ticker_message(void);
 static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message_t *out_message);
 static void mqtt_handle_received_message(const char *payload);
+static embedded_audio_clip_t audio_get_embedded_beep_asset(int asset_id);
 static embedded_audio_clip_t audio_get_embedded_beep(int beep_type);
+static bool audio_write_beep_clip(const embedded_audio_clip_t *clip);
+static bool audio_write_silence_ms(uint32_t duration_ms);
 static bool audio_init(void);
 static void audio_notification_beep_task(void *arg);
 static void audio_request_notification_beep(int beep_type);
@@ -477,12 +517,24 @@ static void power_management_init(void)
 {
 #if CONFIG_PM_ENABLE
     esp_pm_config_t pm_config = {};
+    bool production_build = false;
     pm_config.max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
     pm_config.min_freq_mhz = 40;
+
+#if CONFIG_RLCD_PRODUCTION_BUILD
+    production_build = true;
     pm_config.light_sleep_enable = true;
+#else
+    pm_config.light_sleep_enable = false;
+#endif
+
     ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
     ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "overlay_input", &overlay_input_pm_lock));
-    ESP_LOGI(TAG, "PM enabled: max=%d MHz min=%d MHz light_sleep=%d", pm_config.max_freq_mhz, pm_config.min_freq_mhz, pm_config.light_sleep_enable);
+    ESP_LOGI(TAG, "PM enabled: max=%d MHz min=%d MHz light_sleep=%d production=%d",
+             pm_config.max_freq_mhz,
+             pm_config.min_freq_mhz,
+             pm_config.light_sleep_enable,
+             production_build);
 #endif
 }
 
@@ -784,20 +836,53 @@ static void ui_hide_message_overlay(void)
     sync_message_input_power_lock();
 }
 
+static void ui_format_ticker_message(const char *title, const char *message, char *ticker_text, size_t ticker_text_size)
+{
+    if (ticker_text == NULL || ticker_text_size == 0) {
+        return;
+    }
+
+    if (title != NULL && title[0] != '\0' && message != NULL && message[0] != '\0') {
+        snprintf(ticker_text, ticker_text_size, "【%s】%s", title, message);
+    } else if (title != NULL && title[0] != '\0') {
+        snprintf(ticker_text, ticker_text_size, "【%s】", title);
+    } else {
+        snprintf(ticker_text, ticker_text_size, "%s", (message != NULL) ? message : "");
+    }
+}
+
 static void ui_show_ticker_message(const char *title, const char *message, int timeout_seconds)
 {
     char ticker_text[MQTT_TICKER_TEXT_MAX_LEN];
 
-    if (title != NULL && title[0] != '\0' && message != NULL && message[0] != '\0') {
-        snprintf(ticker_text, sizeof(ticker_text), "【%s】%s", title, message);
-    } else if (title != NULL && title[0] != '\0') {
-        snprintf(ticker_text, sizeof(ticker_text), "【%s】", title);
-    } else {
-        snprintf(ticker_text, sizeof(ticker_text), "%s", (message != NULL) ? message : "");
-    }
+    ui_format_ticker_message(title, message, ticker_text, sizeof(ticker_text));
 
     if (Lvgl_lock(-1)) {
         dashboard_ui_show_ticker_message(ticker_text);
+        Lvgl_unlock();
+    }
+
+    state_lock();
+    ticker_message_active = true;
+    ticker_message_requires_key = (timeout_seconds == 0);
+    if (timeout_seconds > 0) {
+        ticker_message_expire_at_us = esp_timer_get_time() + ((int64_t)timeout_seconds * 1000000LL);
+    } else {
+        ticker_message_expire_at_us = 0;
+    }
+    state_unlock();
+
+    sync_message_input_power_lock();
+}
+
+static void ui_show_marquee_ticker_message(const char *title, const char *message, int timeout_seconds)
+{
+    char ticker_text[MQTT_TICKER_TEXT_MAX_LEN];
+
+    ui_format_ticker_message(title, message, ticker_text, sizeof(ticker_text));
+
+    if (Lvgl_lock(-1)) {
+        dashboard_ui_show_marquee_ticker_message(ticker_text);
         Lvgl_unlock();
     }
 
@@ -830,33 +915,175 @@ static void ui_hide_ticker_message(void)
     sync_message_input_power_lock();
 }
 
-static embedded_audio_clip_t audio_get_embedded_beep(int beep_type)
+static embedded_audio_clip_t audio_get_embedded_beep_asset(int asset_id)
 {
-    switch (beep_type) {
-        case AUDIO_BEEP_TYPE_1:
+    switch (asset_id) {
+        case AUDIO_BEEP_ASSET_1:
             return (embedded_audio_clip_t){
                 .data = beep1_pcm_start,
                 .size = (size_t)(beep1_pcm_end - beep1_pcm_start),
+                .repeat_count = 0,
+                .gap_ms = 0,
             };
 
-        case AUDIO_BEEP_TYPE_2:
+        case AUDIO_BEEP_ASSET_2:
             return (embedded_audio_clip_t){
                 .data = beep2_pcm_start,
                 .size = (size_t)(beep2_pcm_end - beep2_pcm_start),
+                .repeat_count = 0,
+                .gap_ms = 0,
             };
 
-        case AUDIO_BEEP_TYPE_3:
+        case AUDIO_BEEP_ASSET_4:
             return (embedded_audio_clip_t){
-                .data = beep3_pcm_start,
-                .size = (size_t)(beep3_pcm_end - beep3_pcm_start),
+                .data = beep4_pcm_start,
+                .size = (size_t)(beep4_pcm_end - beep4_pcm_start),
+                .repeat_count = 0,
+                .gap_ms = 0,
+            };
+
+        case AUDIO_BEEP_ASSET_5:
+            return (embedded_audio_clip_t){
+                .data = beep5_pcm_start,
+                .size = (size_t)(beep5_pcm_end - beep5_pcm_start),
+                .repeat_count = 0,
+                .gap_ms = 0,
+            };
+
+        case AUDIO_BEEP_ASSET_6:
+            return (embedded_audio_clip_t){
+                .data = beep6_pcm_start,
+                .size = (size_t)(beep6_pcm_end - beep6_pcm_start),
+                .repeat_count = 0,
+                .gap_ms = 0,
             };
 
         default:
             return (embedded_audio_clip_t){
                 .data = NULL,
                 .size = 0,
+                .repeat_count = 0,
+                .gap_ms = 0,
             };
     }
+}
+
+static embedded_audio_clip_t audio_get_embedded_beep(int beep_type)
+{
+    embedded_audio_clip_t clip;
+    audio_beep_pattern_t pattern;
+
+    if (beep_type <= AUDIO_BEEP_TYPE_NONE || beep_type > AUDIO_BEEP_TYPE_6) {
+        return (embedded_audio_clip_t){
+            .data = NULL,
+            .size = 0,
+            .repeat_count = 0,
+            .gap_ms = 0,
+        };
+    }
+
+    pattern = AUDIO_BEEP_PATTERNS[beep_type];
+    clip = audio_get_embedded_beep_asset(pattern.asset_id);
+    clip.repeat_count = pattern.repeat_count;
+    clip.gap_ms = pattern.gap_ms;
+    return clip;
+}
+
+static bool audio_write_beep_clip(const embedded_audio_clip_t *clip)
+{
+    int16_t chunk_buffer[AUDIO_BEEP_PCM_CHUNK_BYTES / sizeof(int16_t)];
+    const uint8_t *src;
+    size_t remaining_bytes;
+    size_t total_frames;
+    size_t fade_frames;
+    size_t frame_offset = 0;
+
+    if (audio_playback == NULL || clip == NULL || clip->data == NULL || clip->size < AUDIO_BEEP_FRAME_BYTES) {
+        return false;
+    }
+
+    remaining_bytes = clip->size - (clip->size % AUDIO_BEEP_FRAME_BYTES);
+    if (remaining_bytes == 0) {
+        return false;
+    }
+
+    total_frames = remaining_bytes / AUDIO_BEEP_FRAME_BYTES;
+    fade_frames = ((uint64_t)AUDIO_BEEP_SAMPLE_RATE * AUDIO_BEEP_EDGE_FADE_MS) / 1000U;
+    if (fade_frames > (total_frames / 2U)) {
+        fade_frames = total_frames / 2U;
+    }
+
+    if (fade_frames == 0) {
+        return esp_codec_dev_write(audio_playback, (void *)clip->data, remaining_bytes) == ESP_CODEC_DEV_OK;
+    }
+
+    src = clip->data;
+    while (remaining_bytes > 0) {
+        size_t chunk_bytes = remaining_bytes > AUDIO_BEEP_PCM_CHUNK_BYTES ? AUDIO_BEEP_PCM_CHUNK_BYTES : remaining_bytes;
+        size_t chunk_frames = chunk_bytes / AUDIO_BEEP_FRAME_BYTES;
+
+        memcpy(chunk_buffer, src, chunk_bytes);
+        for (size_t frame_index = 0; frame_index < chunk_frames; frame_index++) {
+            size_t absolute_frame = frame_offset + frame_index;
+            uint32_t gain = (uint32_t)fade_frames;
+
+            if (absolute_frame < fade_frames) {
+                uint32_t fade_in_gain = (uint32_t)(absolute_frame + 1U);
+                if (fade_in_gain < gain) {
+                    gain = fade_in_gain;
+                }
+            }
+
+            if (absolute_frame >= (total_frames - fade_frames)) {
+                uint32_t fade_out_gain = (uint32_t)(total_frames - absolute_frame);
+                if (fade_out_gain < gain) {
+                    gain = fade_out_gain;
+                }
+            }
+
+            if (gain < fade_frames) {
+                size_t sample_index = frame_index * AUDIO_BEEP_CHANNELS;
+                for (int channel = 0; channel < AUDIO_BEEP_CHANNELS; channel++) {
+                    int32_t sample = chunk_buffer[sample_index + channel];
+                    chunk_buffer[sample_index + channel] = (int16_t)((sample * (int32_t)gain) / (int32_t)fade_frames);
+                }
+            }
+        }
+
+        if (esp_codec_dev_write(audio_playback, chunk_buffer, chunk_bytes) != ESP_CODEC_DEV_OK) {
+            return false;
+        }
+
+        src += chunk_bytes;
+        remaining_bytes -= chunk_bytes;
+        frame_offset += chunk_frames;
+    }
+
+    return true;
+}
+
+static bool audio_write_silence_ms(uint32_t duration_ms)
+{
+    static uint8_t silence_chunk[AUDIO_BEEP_SILENCE_CHUNK_BYTES] = {0};
+    uint64_t frame_count;
+    size_t remaining_bytes;
+
+    if (audio_playback == NULL || duration_ms == 0) {
+        return true;
+    }
+
+    frame_count = ((uint64_t)AUDIO_BEEP_SAMPLE_RATE * duration_ms) / 1000U;
+    remaining_bytes = (size_t)(frame_count * AUDIO_BEEP_FRAME_BYTES);
+    while (remaining_bytes > 0) {
+        size_t chunk_size = remaining_bytes > sizeof(silence_chunk) ? sizeof(silence_chunk) : remaining_bytes;
+        if (esp_codec_dev_write(audio_playback, silence_chunk, chunk_size) != ESP_CODEC_DEV_OK) {
+            ESP_LOGW(TAG, "Failed to write silence gap");
+            return false;
+        }
+        remaining_bytes -= chunk_size;
+    }
+
+    return true;
 }
 
 static bool audio_init(void)
@@ -909,9 +1136,17 @@ static void audio_notification_beep_task(void *arg)
     if (audio_init()) {
         int output_volume = audio_sound_mode_volume(audio_sound_mode_snapshot());
         embedded_audio_clip_t clip = audio_get_embedded_beep(local_beep_type);
-        if (output_volume > 0 && clip.data != NULL && clip.size > 0) {
+        if (output_volume > 0 && clip.data != NULL && clip.size > 0 && clip.repeat_count > 0) {
             esp_codec_dev_set_out_vol(audio_playback, output_volume);
-            esp_codec_dev_write(audio_playback, (void *)clip.data, clip.size);
+            for (uint8_t repeat_index = 0; repeat_index < clip.repeat_count; repeat_index++) {
+                if (!audio_write_beep_clip(&clip)) {
+                    ESP_LOGW(TAG, "Failed to play beep type %d", local_beep_type);
+                    break;
+                }
+                if ((repeat_index + 1) < clip.repeat_count && !audio_write_silence_ms(clip.gap_ms)) {
+                    break;
+                }
+            }
         }
     }
 
@@ -930,7 +1165,7 @@ static void audio_request_notification_beep(int beep_type)
     }
 
     state_lock();
-    if (audio_beep_in_progress || beep_type <= AUDIO_BEEP_TYPE_NONE || beep_type > AUDIO_BEEP_TYPE_3) {
+    if (audio_beep_in_progress || beep_type <= AUDIO_BEEP_TYPE_NONE || beep_type > AUDIO_BEEP_TYPE_6) {
         state_unlock();
         return;
     }
@@ -1160,7 +1395,7 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
         if (cJSON_IsBool(beep_item)) {
             out_message->beep_type = cJSON_IsTrue(beep_item) ? AUDIO_BEEP_TYPE_1 : AUDIO_BEEP_TYPE_NONE;
         } else if (cJSON_IsNumber(beep_item)) {
-            if (beep_item->valueint >= AUDIO_BEEP_TYPE_1 && beep_item->valueint <= AUDIO_BEEP_TYPE_3) {
+            if (beep_item->valueint >= AUDIO_BEEP_TYPE_1 && beep_item->valueint <= AUDIO_BEEP_TYPE_6) {
                 out_message->beep_type = beep_item->valueint;
             } else {
                 out_message->beep_type = AUDIO_BEEP_TYPE_NONE;
@@ -1198,6 +1433,10 @@ static void mqtt_handle_received_message(const char *payload)
 
         case 2:
             ui_show_ticker_message(message.title, message.content, message.timeout_seconds);
+            break;
+
+        case 3:
+            ui_show_marquee_ticker_message(message.title, message.content, message.timeout_seconds);
             break;
 
         default:

@@ -194,8 +194,8 @@ void DisplayPort::RLCD_ColorClear(uint8_t color) {
 
 void DisplayPort::RLCD_Display() {
     RLCD_SendCommand(0x2A);     // Column Address Set
-  	RLCD_SendData(0x12);
-  	RLCD_SendData(0x2A);
+    	RLCD_SendData(0x12);
+    	RLCD_SendData(0x2A);
 
   	RLCD_SendCommand(0x2B);     // Page Address Set
   	RLCD_SendData(0x00);

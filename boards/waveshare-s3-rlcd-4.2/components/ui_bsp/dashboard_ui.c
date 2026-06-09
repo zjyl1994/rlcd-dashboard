@@ -49,30 +49,34 @@
 #define BATTERY_FILL_MAX_W 12
 #define CLOCK_REGION_TOP (TOP_ICON_Y + TOP_ICON_HEIGHT)
 #define CLOCK_REGION_BOTTOM SECOND_LABEL_Y
-#define CLOCK_CANVAS_X 24
-#define CLOCK_CANVAS_Y (CLOCK_REGION_TOP + (((CLOCK_REGION_BOTTOM - CLOCK_REGION_TOP) - CLOCK_CANVAS_HEIGHT) / 2))
-#define CLOCK_CANVAS_WIDTH 352
 #define CLOCK_CANVAS_HEIGHT 152
-#define CLOCK_DIGIT_X0 8
-#define CLOCK_DIGIT_X1 88
-#define CLOCK_DIGIT_X2 192
-#define CLOCK_DIGIT_X3 272
-#define CLOCK_DIGIT_Y 6
-#define CLOCK_DIGIT_WIDTH 72
-#define CLOCK_DIGIT_HEIGHT 140
-#define CLOCK_SEGMENT_THICKNESS 14
+#define CLOCK_DIGIT_Y 12
+#define CLOCK_DIGIT_WIDTH 66
+#define CLOCK_DIGIT_HEIGHT 128
+#define CLOCK_SEGMENT_THICKNESS 12
 #define CLOCK_HORIZONTAL_X_OFFSET 0
 #define CLOCK_HORIZONTAL_LENGTH CLOCK_DIGIT_WIDTH
-#define CLOCK_MIDDLE_SEGMENT_Y 63
-#define CLOCK_BOTTOM_SEGMENT_Y 126
+#define CLOCK_MIDDLE_SEGMENT_Y 58
+#define CLOCK_BOTTOM_SEGMENT_Y 116
 #define CLOCK_VERTICAL_UPPER_Y 0
 #define CLOCK_VERTICAL_UPPER_LENGTH (CLOCK_MIDDLE_SEGMENT_Y + CLOCK_SEGMENT_THICKNESS)
 #define CLOCK_VERTICAL_LOWER_Y CLOCK_MIDDLE_SEGMENT_Y
 #define CLOCK_VERTICAL_LOWER_LENGTH (CLOCK_DIGIT_HEIGHT - CLOCK_VERTICAL_LOWER_Y)
-#define CLOCK_COLON_CENTER_X 176
+#define CLOCK_SIDE_PADDING 4
+#define CLOCK_DIGIT_GAP 22
+#define CLOCK_COLON_GAP 26
+#define CLOCK_DIGIT_X0 CLOCK_SIDE_PADDING
+#define CLOCK_DIGIT_X1 (CLOCK_DIGIT_X0 + CLOCK_DIGIT_WIDTH + CLOCK_DIGIT_GAP)
+#define CLOCK_COLON_X (CLOCK_DIGIT_X1 + CLOCK_DIGIT_WIDTH + CLOCK_COLON_GAP)
+#define CLOCK_COLON_CENTER_X (CLOCK_COLON_X + (CLOCK_COLON_SIZE / 2))
+#define CLOCK_DIGIT_X2 (CLOCK_COLON_X + CLOCK_COLON_SIZE + CLOCK_COLON_GAP)
+#define CLOCK_DIGIT_X3 (CLOCK_DIGIT_X2 + CLOCK_DIGIT_WIDTH + CLOCK_DIGIT_GAP)
+#define CLOCK_CANVAS_WIDTH (CLOCK_DIGIT_X3 + CLOCK_DIGIT_WIDTH + CLOCK_SIDE_PADDING)
+#define CLOCK_CANVAS_X ((SCREEN_WIDTH - CLOCK_CANVAS_WIDTH) / 2)
+#define CLOCK_CANVAS_Y (CLOCK_REGION_TOP + (((CLOCK_REGION_BOTTOM - CLOCK_REGION_TOP) - CLOCK_CANVAS_HEIGHT) / 2))
 #define CLOCK_COLON_TOP_CENTER_Y 50
 #define CLOCK_COLON_BOTTOM_CENTER_Y 96
-#define CLOCK_COLON_SIZE 10
+#define CLOCK_COLON_SIZE 8
 #define TICKER_VIEW_X 10
 #define TICKER_VIEW_Y 280
 #define TICKER_VIEW_WIDTH 380
@@ -83,6 +87,8 @@
 #define TICKER_TEXT_MAX_LEN 640
 #define TICKER_PAGE_MAX_COUNT 48
 #define TICKER_PAGE_MAX_LEN 128
+#define TICKER_MARQUEE_SPEED_PX_PER_SEC 80
+#define TICKER_MARQUEE_LEAD_SPACE_EXTRA 2
 #define MESSAGE_TITLE_BAR_HEIGHT 20
 #define MESSAGE_TITLE_LABEL_Y 2
 #define MESSAGE_TITLE_SCALE 256
@@ -124,6 +130,7 @@ static lv_timer_t *ticker_timer = NULL;
 static char ticker_pages[TICKER_PAGE_MAX_COUNT][TICKER_PAGE_MAX_LEN] = {{0}};
 static uint16_t ticker_page_count = 0;
 static uint16_t ticker_page_index = 0;
+static bool ticker_marquee_active = false;
 
 static uint8_t clock_digit_bitmaps[10][CLOCK_DIGIT_BITMAP_STRIDE * CLOCK_DIGIT_HEIGHT];
 static uint8_t clock_colon_bitmap[CLOCK_COLON_BITMAP_STRIDE * CLOCK_COLON_BITMAP_HEIGHT];
@@ -201,6 +208,89 @@ static bool ticker_line_fits(const char *text)
     lv_point_t text_size = {0, 0};
     lv_text_get_size(&text_size, text, &unifont_16, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_EXPAND);
     return text_size.x <= TICKER_TEXT_WIDTH;
+}
+
+static void ticker_stop_marquee(void)
+{
+    if (ticker_label == NULL) {
+        return;
+    }
+
+    lv_anim_delete(ticker_label, NULL);
+}
+
+static void ticker_reset_label_layout(void)
+{
+    if (ticker_label == NULL) {
+        return;
+    }
+
+    lv_obj_set_pos(ticker_label, TICKER_TEXT_INSET_X, 0);
+    lv_obj_set_size(ticker_label, TICKER_TEXT_WIDTH, TICKER_VIEW_HEIGHT);
+    lv_obj_set_style_text_align(ticker_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_anim_duration(ticker_label, 0, 0);
+    lv_label_set_long_mode(ticker_label, LV_LABEL_LONG_CLIP);
+}
+
+static void ticker_normalize_marquee_text(const char *message, char *buffer, size_t buffer_size)
+{
+    const char *src = (message != NULL) ? message : "";
+    int32_t space_width = lv_font_get_glyph_width(&unifont_16, ' ', ' ');
+    size_t lead_space_count;
+    size_t out = 0;
+
+    if (buffer_size == 0) {
+        return;
+    }
+
+    if (space_width <= 0) {
+        space_width = 4;
+    }
+    lead_space_count = (size_t)((TICKER_TEXT_WIDTH + space_width - 1) / space_width) + TICKER_MARQUEE_LEAD_SPACE_EXTRA;
+    while (lead_space_count > 0 && out + 1 < buffer_size) {
+        buffer[out++] = ' ';
+        lead_space_count--;
+    }
+
+    while (*src != '\0' && out + 1 < buffer_size) {
+        if (*src == '\r' || *src == '\n' || *src == '\t') {
+            if (out > 0 && buffer[out - 1] != ' ') {
+                buffer[out++] = ' ';
+            }
+            src++;
+            continue;
+        }
+
+        buffer[out++] = *src++;
+    }
+
+    buffer[out] = '\0';
+}
+
+static void ticker_start_marquee(const char *message)
+{
+    char normalized_text[TICKER_TEXT_MAX_LEN] = {0};
+
+    if (ticker_label == NULL) {
+        return;
+    }
+
+    ticker_stop_marquee();
+    memset(ticker_pages, 0, sizeof(ticker_pages));
+    ticker_page_count = 0;
+    ticker_page_index = 0;
+
+    ticker_normalize_marquee_text(message, normalized_text, sizeof(normalized_text));
+    if (normalized_text[0] == '\0') {
+        strlcpy(normalized_text, " ", sizeof(normalized_text));
+    }
+
+    lv_obj_set_pos(ticker_label, TICKER_TEXT_INSET_X, 0);
+    lv_obj_set_size(ticker_label, TICKER_TEXT_WIDTH, TICKER_VIEW_HEIGHT);
+    lv_obj_set_style_text_align(ticker_label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_anim_duration(ticker_label, lv_anim_speed(TICKER_MARQUEE_SPEED_PX_PER_SEC), 0);
+    lv_label_set_long_mode(ticker_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_label_set_text(ticker_label, normalized_text);
 }
 
 static void ticker_apply_current_page(void)
@@ -671,7 +761,7 @@ void dashboard_ui_init(void)
 
 void dashboard_ui_update_time(int hour, int minute, int second)
 {
-    int colon_visible = ((second & 1) == 0) ? 1 : 0;
+    int colon_visible = 1;
 
     if (last_clock_hour != hour || last_clock_minute != minute || last_clock_colon_visible != colon_visible) {
         render_clock_canvas(hour, minute, colon_visible != 0);
@@ -681,6 +771,9 @@ void dashboard_ui_update_time(int hour, int minute, int second)
     }
 
     if (second_label == NULL) {
+        return;
+    }
+    if (ticker_marquee_active) {
         return;
     }
 
@@ -807,6 +900,9 @@ void dashboard_ui_show_ticker_message(const char *message)
         return;
     }
 
+    ticker_stop_marquee();
+    ticker_reset_label_layout();
+    ticker_marquee_active = false;
     ticker_prepare_text(message);
     lv_obj_clear_flag(ticker_view, LV_OBJ_FLAG_HIDDEN);
     if (ticker_timer != NULL) {
@@ -822,6 +918,23 @@ void dashboard_ui_show_ticker_message(const char *message)
     }
 }
 
+void dashboard_ui_show_marquee_ticker_message(const char *message)
+{
+    if (ticker_view == NULL || ticker_label == NULL) {
+        return;
+    }
+
+    if (ticker_timer != NULL) {
+        lv_timer_pause(ticker_timer);
+    }
+    ticker_marquee_active = true;
+    ticker_start_marquee(message);
+    lv_obj_clear_flag(ticker_view, LV_OBJ_FLAG_HIDDEN);
+    if (status_label != NULL) {
+        lv_obj_add_flag(status_label, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void dashboard_ui_hide_ticker_message(void)
 {
     if (ticker_view == NULL) {
@@ -831,6 +944,9 @@ void dashboard_ui_hide_ticker_message(void)
     if (ticker_timer != NULL) {
         lv_timer_pause(ticker_timer);
     }
+    ticker_marquee_active = false;
+    ticker_stop_marquee();
+    ticker_reset_label_layout();
     memset(ticker_pages, 0, sizeof(ticker_pages));
     ticker_page_count = 0;
     ticker_page_index = 0;

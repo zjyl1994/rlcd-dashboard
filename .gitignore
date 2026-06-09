@@ -1,8 +1,11 @@
 # ESP-IDF generated output
 **/build/
+**/build-*/
 **/.cache/
 **/managed_components/
 **/sdkconfig.old
+**/sdkconfig.dev
+**/sdkconfig.prod
 
 # Python cache
 **/__pycache__/
