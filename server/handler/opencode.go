@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	maxTitleLen   = 64
-	maxContentLen = 512
+	maxTitleLen    = 64
+	maxContentLen  = 512
+	maxMessageType = 3
+	maxBeepType    = 6
 )
 
 type NotifyOpencodeRequest struct {
@@ -66,8 +68,8 @@ func NotifyOpencodeHandler(c *gin.Context) {
 	if req.Type != nil {
 		msgType = *req.Type
 	}
-	if msgType < 1 || msgType > 2 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "type must be 1-2"})
+	if msgType < 1 || msgType > maxMessageType {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("type must be 1-%d", maxMessageType)})
 		return
 	}
 
@@ -79,8 +81,8 @@ func NotifyOpencodeHandler(c *gin.Context) {
 	if req.Timeout != nil {
 		timeout = *req.Timeout
 	}
-	if beep < 0 || beep > 3 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "beep must be 0-3"})
+	if beep < 0 || beep > maxBeepType {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("beep must be 0-%d", maxBeepType)})
 		return
 	}
 	if timeout < 0 || timeout > 60 {
