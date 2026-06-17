@@ -28,7 +28,7 @@ type NotifyMessage struct {
 	Timeout int    `json:"timeout"`
 }
 
-func NotifyOpencodeHandler(c *gin.Context) {
+func NotifyHandler(c *gin.Context) {
 	name := strings.TrimSpace(c.Query("name"))
 	if name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
@@ -103,4 +103,74 @@ func validateTopicName(name string) error {
 		return fmt.Errorf("name must not contain '/'")
 	}
 	return nil
+}
+
+type TrafficOpencodeRequest struct {
+	Agent1 *int `json:"agent1"`
+	Agent2 *int `json:"agent2"`
+}
+
+type TrafficMessage struct {
+	Agent1 *int `json:"agent1,omitempty"`
+	Agent2 *int `json:"agent2,omitempty"`
+}
+
+func TrafficHandler(c *gin.Context) {
+	name := strings.TrimSpace(c.Query("name"))
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	if err := validateTopicName(name); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var req TrafficOpencodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.Agent1 == nil && req.Agent2 == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one of agent1/agent2 is required"})
+		return
+	}
+
+	if vars.Mqtt == nil || !vars.Mqtt.IsConnected() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "mqtt not connected"})
+		return
+	}
+
+	msg := TrafficMessage{}
+	if req.Agent1 != nil {
+		if *req.Agent1 < 0 || *req.Agent1 > 3 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "agent1 must be 0-3"})
+			return
+		}
+		msg.Agent1 = req.Agent1
+	}
+	if req.Agent2 != nil {
+		if *req.Agent2 < 0 || *req.Agent2 > 3 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "agent2 must be 0-3"})
+			return
+		}
+		msg.Agent2 = req.Agent2
+	}
+
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	topic := fmt.Sprintf("/rlcd/%s/message", name)
+	token := vars.Mqtt.Publish(topic, 0, false, payload)
+	token.Wait()
+	if err := token.Error(); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

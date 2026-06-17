@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
-const WEBHOOK_URL = "https://example.com/api/notify/opencode?name=YOU_RLCD_DEVICE_NAME"
+const WEBHOOK_URL = "https://example.com/api/opencode/notify?name=YOU_RLCD_DEVICE_NAME"
 
 async function notify(
   title: string,
