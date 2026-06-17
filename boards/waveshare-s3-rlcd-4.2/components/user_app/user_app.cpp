@@ -731,14 +731,14 @@ static void ui_set_default_status_message_locked(void)
     device_config_t config;
 
     device_config_snapshot(&config);
-    dashboard_ui_set_status_message(config.device_name);
+    dashboard_ui_show_message(NULL, config.device_name);
 }
 
 static void ui_set_status_message(const char *message)
 {
     if (message != NULL && message[0] != '\0') {
         if (Lvgl_lock(-1)) {
-            dashboard_ui_set_status_message(message);
+            dashboard_ui_show_message(NULL, message);
             Lvgl_unlock();
         }
     } else {
@@ -1208,14 +1208,24 @@ static void request_manual_network_sync(void)
 static void handle_short_key_press(void)
 {
     bool local_provisioning;
+    bool local_overlay_active;
 
     state_lock();
     local_provisioning = prov_active;
+    local_overlay_active = message_overlay_active;
     state_unlock();
 
     if (local_provisioning) {
         ui_set_status_message("Leaving provisioning...");
         schedule_provisioning_action(false, true);
+    } else if (local_overlay_active) {
+        state_lock();
+        message_overlay_active = false;
+        message_overlay_requires_key = false;
+        message_overlay_expire_at_us = 0;
+        state_unlock();
+        sync_message_input_power_lock();
+        ui_set_status_message("");
     } else {
         recall_last_message_fullscreen();
     }
@@ -1262,7 +1272,7 @@ static void handle_short_boot_press(void)
         return;
     }
 
-    ui_set_statusf("Sound: %s", audio_sound_mode_name(next_mode));
+    ui_set_statusf("Sound\n%s", audio_sound_mode_name(next_mode));
 }
 
 static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message_t *out_message)
@@ -1759,7 +1769,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
         xEventGroupClearBits(wifi_event_group, WIFI_CONNECT_FAIL_BIT);
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
-        ui_set_statusf("Connected: %s (%s)", connected_ssid[0] ? connected_ssid : "Wi-Fi", ip_text);
+        ui_set_statusf("Connected\n%s (%s)", connected_ssid[0] ? connected_ssid : "Wi-Fi", ip_text);
         wifi_apply_power_save(true, false);
     }
 }
@@ -1918,14 +1928,14 @@ static bool wifi_try_connect_credential(const saved_wifi_credential_t *credentia
     state_unlock();
 
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_config(WIFI_IF_STA, &station_cfg));
-    ui_set_statusf("Connecting: %s", credential->ssid);
+    ui_set_statusf("Connecting\n%s", credential->ssid);
 
     esp_err_t connect_err = esp_wifi_connect();
     if (connect_err != ESP_OK) {
         state_lock();
         connect_in_progress = false;
         state_unlock();
-        ui_set_statusf("Connect start failed: %s", credential->ssid);
+        ui_set_statusf("Connect start failed\n%s", credential->ssid);
         return false;
     }
 
@@ -1945,7 +1955,7 @@ static bool wifi_try_connect_credential(const saved_wifi_credential_t *credentia
     }
 
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_disconnect());
-    ui_set_statusf("Connect failed: %s", credential->ssid);
+    ui_set_statusf("Connect failed\n%s", credential->ssid);
     return false;
 }
 
@@ -2341,7 +2351,7 @@ static esp_err_t provision_save_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    ui_set_statusf("Saved Wi-Fi: %s", ssid);
+    ui_set_statusf("Saved Wi-Fi\n%s", ssid);
     provision_refresh_scan_results();
     return send_provision_page(req, updated_existing ? "Updated existing Wi-Fi credentials." : "Saved new Wi-Fi credentials.", ssid);
 }
@@ -2380,7 +2390,7 @@ static esp_err_t device_save_post_handler(httpd_req_t *req)
     }
 
     adjust_rtc_timezone_offset(current_config.timezone_offset_hours, new_config.timezone_offset_hours);
-    ui_set_statusf("Saved timezone: GMT%+d", (int)new_config.timezone_offset_hours);
+    ui_set_statusf("Saved timezone\nGMT%+d", (int)new_config.timezone_offset_hours);
     return send_provision_page(req, "Saved device settings.", NULL);
 }
 
@@ -2434,7 +2444,7 @@ static esp_err_t mqtt_save_post_handler(httpd_req_t *req)
     }
 
     mqtt_request_restart();
-    ui_set_statusf("Saved MQTT: %s://%s:%u", new_config.use_tls ? "mqtts" : "mqtt", new_config.host, (unsigned int)new_config.port);
+    ui_set_statusf("Saved MQTT\n%s://%s:%u", new_config.use_tls ? "mqtts" : "mqtt", new_config.host, (unsigned int)new_config.port);
     return send_provision_page(req, "Saved MQTT settings.", NULL);
 }
 
@@ -2552,7 +2562,7 @@ static void wifi_enter_provisioning(void)
     http_server_start();
     ui_set_provisioning_screen(true);
     ui_update_wifi_icon(false, NULL, 0);
-    ui_set_statusf("Provisioning AP: %s", provision_ap_ssid);
+    ui_set_statusf("Provisioning AP\n%s", provision_ap_ssid);
 }
 
 static void wifi_exit_provisioning(bool reconnect_saved)
@@ -2680,7 +2690,7 @@ static bool schedule_provisioning_action(bool enter, bool reconnect_saved)
 
 static void ntp_sync_once(void)
 {
-    ui_set_status_message("Syncing time from ntp.aliyun.com");
+    ui_set_status_message("Syncing time\nfrom ntp.aliyun.com");
 
     esp_sntp_stop();
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
@@ -2736,19 +2746,19 @@ static void ui_set_mqtt_error_status(const esp_mqtt_error_codes_t *error)
         case MQTT_ERROR_TYPE_TCP_TRANSPORT:
             if (error->esp_tls_last_esp_err != ESP_OK) {
                 ui_set_statusf(
-                    "MQTT transport: %s",
+                    "MQTT transport\n%s",
                     esp_err_to_name(error->esp_tls_last_esp_err));
             } else if (error->esp_transport_sock_errno != 0) {
-                ui_set_statusf("MQTT socket errno: %d", error->esp_transport_sock_errno);
+                ui_set_statusf("MQTT socket errno\n%d", error->esp_transport_sock_errno);
             } else if (error->esp_tls_stack_err != 0) {
-                ui_set_statusf("MQTT TLS stack err: %d", error->esp_tls_stack_err);
+                ui_set_statusf("MQTT TLS stack err\n%d", error->esp_tls_stack_err);
             } else {
                 ui_set_status_message("MQTT transport error");
             }
             break;
 
         case MQTT_ERROR_TYPE_CONNECTION_REFUSED:
-            ui_set_statusf("MQTT refused: %d", (int)error->connect_return_code);
+            ui_set_statusf("MQTT refused\n%d", (int)error->connect_return_code);
             break;
 
         default:
@@ -2800,7 +2810,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             esp_mqtt_client_subscribe_single(event->client, mqtt_message_topic, 1);
             ESP_LOGI(TAG, "MQTT connected: %s", mqtt_broker_uri);
             ui_update_mqtt_icon(true);
-            ui_set_statusf("MQTT connected: %s", mqtt_message_topic);
+            ui_set_statusf("MQTT connected\n%s", mqtt_message_topic);
             break;
 
         case MQTT_EVENT_DISCONNECTED:
@@ -2954,7 +2964,7 @@ static bool mqtt_start_client(void)
     mqtt_client = client;
     mqtt_restart_requested = false;
     state_unlock();
-    ui_set_statusf("Connecting MQTT: %s", mqtt_broker_uri);
+    ui_set_statusf("Connecting MQTT\n%s", mqtt_broker_uri);
     return true;
 }
 
@@ -3049,6 +3059,7 @@ static void ui_housekeeping_task(void *arg)
             message_overlay_requires_key = false;
             state_unlock();
             sync_message_input_power_lock();
+            ui_set_status_message("");
         }
 
         if (!mqtt_icon_initialized || local_mqtt_connected != last_mqtt_icon_connected) {

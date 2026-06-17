@@ -18,7 +18,6 @@ void dashboard_ui_update_wifi_status(bool connected, const char *ssid, int rssi)
 void dashboard_ui_update_mqtt_status(bool connected);
 void dashboard_ui_update_battery(int level);
 void dashboard_ui_set_provisioning(bool active, const char *ap_ssid, const char *ap_ip);
-void dashboard_ui_set_status_message(const char *message);
 
 #ifdef __cplusplus
 }

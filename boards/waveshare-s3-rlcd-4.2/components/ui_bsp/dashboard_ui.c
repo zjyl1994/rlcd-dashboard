@@ -74,9 +74,6 @@
 #define MSG_CONTENT_Y (H_SPLIT_Y + 6)
 #define MSG_FONT_SIZE 24
 
-/* provisioning (same as before) */
-#define STAT_LABEL_Y (SCREEN_HEIGHT - 16)
-
 static lv_obj_t *screen_obj;
 static lv_obj_t *main_view;
 static lv_obj_t *prov_view;
@@ -87,7 +84,6 @@ static lv_obj_t *wifi_bars[4];
 static lv_obj_t *wifi_mqtt_badge;
 static lv_obj_t *battery_fill;
 static lv_obj_t *msg_content_label;
-static lv_obj_t *status_label;
 static lv_obj_t *prov_title_label;
 static lv_obj_t *prov_ssid_label;
 static lv_obj_t *prov_ip_label;
@@ -250,9 +246,9 @@ void dashboard_ui_init(void)
     main_view = create_box(screen_obj, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, false);
     prov_view = create_box(screen_obj, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, false);
 
-    /* divider lines */
-    create_divider_h(screen_obj, 0, H_SPLIT_Y, SCREEN_WIDTH);
-    create_divider_v(screen_obj, V_SPLIT_X, 0, H_SPLIT_Y);
+    /* divider lines (on main_view so hidden during provisioning) */
+    create_divider_h(main_view, 0, H_SPLIT_Y, SCREEN_WIDTH);
+    create_divider_v(main_view, V_SPLIT_X, 0, H_SPLIT_Y);
 
     /* ---- top-left: clock + date ---- */
     clock_label = create_label(main_view, 0, CLOCK_LABEL_Y, CLOCK_W, LV_TEXT_ALIGN_CENTER, font_clock);
@@ -290,16 +286,13 @@ void dashboard_ui_init(void)
     lv_obj_set_height(msg_content_label, MSG_H);
     lv_label_set_long_mode(msg_content_label, LV_LABEL_LONG_WRAP);
 
-    /* ---- status + provisioning ---- */
-    status_label = create_label(screen_obj, 10, STAT_LABEL_Y, SCREEN_WIDTH - 20, LV_TEXT_ALIGN_CENTER, &lv_font_montserrat_12);
-
+    /* ---- provisioning ---- */
     prov_title_label = create_label(prov_view, 40, 42, 320, LV_TEXT_ALIGN_CENTER, &lv_font_montserrat_24);
     prov_ssid_label = create_label(prov_view, 24, 104, 352, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
     prov_ip_label = create_label(prov_view, 24, 138, 352, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
     prov_hint_label = create_label(prov_view, 24, 188, 352, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
 
     lv_label_set_text(temp_humi_label, "--.- C  --%");
-    lv_label_set_text(status_label, "Booting...");
     lv_label_set_text(prov_title_label, "Provisioning Mode");
     lv_label_set_text(prov_hint_label, "Open 192.168.4.1 in browser\nAdd Wi-Fi credentials\nHold BOOT to exit.");
 
@@ -488,8 +481,4 @@ void dashboard_ui_set_provisioning(bool active, const char *ap_ssid, const char 
     }
 }
 
-void dashboard_ui_set_status_message(const char *message)
-{
-    if (status_label == NULL) return;
-    lv_label_set_text(status_label, (message != NULL) ? message : "");
-}
+
