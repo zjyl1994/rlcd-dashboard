@@ -97,8 +97,8 @@ static constexpr int AUDIO_SOUND_VOLUME_LOUD = 100;
 static constexpr int BOOT_BUTTON_STARTUP_IGNORE_MS = 8000;
 static constexpr int BUTTON_POLL_PERIOD_MS = 20;
 static constexpr int UI_HOUSEKEEPING_PERIOD_MS = 1000;
-static constexpr int CLOCK_UPDATE_PERIOD_MS = 1000;
-static constexpr int SENSOR_UPDATE_PERIOD_MS = 60000;
+static constexpr int CLOCK_UPDATE_PERIOD_MS = 60000;
+static constexpr int SENSOR_UPDATE_PERIOD_MS = 15000;
 static constexpr int BATTERY_UPDATE_PERIOD_MS = 60000;
 static constexpr int WIFI_MONITOR_CONNECTED_PERIOD_MS = 60000;
 static constexpr int WIFI_MONITOR_DISCONNECTED_PERIOD_MS = 5000;
@@ -2081,7 +2081,7 @@ static void captive_dns_start(void)
         return;
     }
 
-    xTaskCreatePinnedToCore(captive_dns_task, "captive_dns", 4 * 1024, NULL, 3, &dns_server_task_handle, 1);
+    xTaskCreatePinnedToCore(captive_dns_task, "captive_dns", 6 * 1024, NULL, 3, &dns_server_task_handle, 1);
 }
 
 static void captive_dns_stop(void)
@@ -3361,10 +3361,10 @@ void UserApp_TaskInit(void)
 {
     xTaskCreatePinnedToCore(clock_task, "clock", 8 * 1024, NULL, 2, NULL, 1);
     xTaskCreatePinnedToCore(sensor_task, "sensor", 3 * 1024, NULL, 2, NULL, 1);
-    xTaskCreatePinnedToCore(battery_task, "battery", 2 * 1024, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(battery_task, "battery", 3 * 1024, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(wifi_monitor_task, "wifi_mon", 6 * 1024, NULL, 2, NULL, 1);
     xTaskCreatePinnedToCore(mqtt_maintenance_task, "mqtt_maint", 5 * 1024, NULL, 2, NULL, 1);
-    xTaskCreatePinnedToCore(ui_housekeeping_task, "ui_housekeep", 3 * 1024, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(ui_housekeeping_task, "ui_housekeep", 4 * 1024, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(ntp_task, "ntp", 4 * 1024, NULL, 2, NULL, 1);
     xTaskCreatePinnedToCore(boot_button_task, "boot_btn", 3 * 1024, NULL, 2, NULL, 1);
     xTaskCreatePinnedToCore(network_startup_task, "net_start", 6 * 1024, NULL, 3, NULL, 1);

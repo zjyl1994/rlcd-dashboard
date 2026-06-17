@@ -1,5 +1,6 @@
 #include "dashboard_ui.h"
 #include "libs/tiny_ttf/lv_tiny_ttf.h"
+#include "esp_attr.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -17,7 +18,7 @@
 #define CLOCK_W V_SPLIT_X
 #define CLOCK_H H_SPLIT_Y
 #define CLOCK_LABEL_Y 10
-#define DATE_LABEL_Y 92
+#define DATE_LABEL_Y 96
 #define CLOCK_FONT_SIZE 72
 #define DATE_FONT_SIZE 18
 
@@ -88,7 +89,7 @@ static lv_obj_t *wifi_mqtt_badge;
 static lv_obj_t *battery_fill;
 static lv_obj_t *msg_content_label;
 static lv_timer_t *msg_timer = NULL;
-static char msg_lines[MSG_MAX_LINES][128];
+static EXT_RAM_BSS_ATTR char msg_lines[MSG_MAX_LINES][128];
 static int msg_line_count = 0;
 static int msg_page_count = 0;
 static int msg_current_page = 0;
@@ -101,7 +102,7 @@ static lv_font_t *font_msg = NULL;
 static lv_font_t *font_date = NULL;
 static lv_obj_t *kv_label;
 static lv_timer_t *kv_timer = NULL;
-static char kv_lines[KV_MAX_LINES][KV_MAX_LINE_LEN];
+static EXT_RAM_BSS_ATTR char kv_lines[KV_MAX_LINES][KV_MAX_LINE_LEN];
 static int kv_line_count = 0;
 static int kv_lines_per_page = 0;
 static int kv_page_count = 0;
@@ -427,7 +428,7 @@ static void kv_show_page(int page)
     int start = page * kv_lines_per_page;
     int end = start + kv_lines_per_page;
     if (end > kv_line_count) end = kv_line_count;
-    char buf[512] = {0};
+    static char buf[512];
     size_t pos = 0;
     for (int i = start; i < end; i++) {
         if (pos > 0 && pos < sizeof(buf) - 1) buf[pos++] = '\n';
@@ -435,6 +436,7 @@ static void kv_show_page(int page)
         if (n > 0) pos += n;
         if (pos >= sizeof(buf) - 1) break;
     }
+    buf[pos] = '\0';
     lv_label_set_text(kv_label, buf);
 }
 
