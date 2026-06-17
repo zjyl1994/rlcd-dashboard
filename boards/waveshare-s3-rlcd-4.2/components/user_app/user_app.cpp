@@ -66,7 +66,6 @@ static constexpr int STATUS_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MESSAGE_MAX_LEN = 512;
 static constexpr int MQTT_MESSAGE_TITLE_MAX_LEN = 64;
-static constexpr int MQTT_TICKER_TEXT_MAX_LEN = MQTT_MESSAGE_MAX_LEN + MQTT_MESSAGE_TITLE_MAX_LEN + 16;
 static constexpr int MQTT_KEEPALIVE_SECONDS = 120;
 static constexpr int MQTT_RECONNECT_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MAINT_CONNECTED_PERIOD_MS = 5000;
@@ -214,8 +213,7 @@ static bool key_button_pressed = false;
 static bool key_button_long_handled = false;
 static bool message_overlay_active = false;
 static bool message_overlay_requires_key = false;
-static bool ticker_message_active = false;
-static bool ticker_message_requires_key = false;
+/* ticker state removed */
 static esp_pm_lock_handle_t overlay_input_pm_lock = NULL;
 static bool overlay_input_pm_lock_held = false;
 static char connected_ssid[33] = {0};
@@ -224,7 +222,6 @@ static char provision_ap_ssid[33] = {0};
 static char provision_ap_ip[16] = {0};
 static int64_t status_message_expire_at_us = 0;
 static int64_t message_overlay_expire_at_us = 0;
-static int64_t ticker_message_expire_at_us = 0;
 static esp_mqtt_client_handle_t mqtt_client = NULL;
 static char mqtt_broker_uri[192] = {0};
 static char mqtt_message_topic[128] = {0};
@@ -252,12 +249,7 @@ static void wifi_exit_provisioning(bool reconnect_saved);
 static bool wifi_connect_saved_networks(bool enter_provision_on_fail);
 static bool schedule_provisioning_action(bool enter, bool reconnect_saved);
 static void device_config_snapshot(device_config_t *config);
-static void ui_show_message_overlay(const char *title, const char *message, int timeout_seconds);
-static void ui_hide_message_overlay(void);
-static void ui_format_ticker_message(const char *title, const char *message, char *ticker_text, size_t ticker_text_size);
-static void ui_show_ticker_message(const char *title, const char *message, int timeout_seconds);
-static void ui_show_marquee_ticker_message(const char *title, const char *message, int timeout_seconds);
-static void ui_hide_ticker_message(void);
+static void ui_show_message(const char *title, const char *message, int timeout_seconds);
 static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message_t *out_message);
 static void mqtt_handle_received_message(const char *payload);
 static embedded_audio_clip_t audio_get_embedded_beep_asset(int asset_id);
@@ -800,10 +792,10 @@ static void ui_update_mqtt_icon(bool connected)
     }
 }
 
-static void ui_show_message_overlay(const char *title, const char *message, int timeout_seconds)
+static void ui_show_message(const char *title, const char *message, int timeout_seconds)
 {
     if (Lvgl_lock(-1)) {
-        dashboard_ui_show_message_overlay(title, message);
+        dashboard_ui_show_message(title, message);
         Lvgl_unlock();
     }
 
@@ -815,101 +807,6 @@ static void ui_show_message_overlay(const char *title, const char *message, int 
     } else {
         message_overlay_expire_at_us = 0;
     }
-    state_unlock();
-
-    sync_message_input_power_lock();
-}
-
-static void ui_hide_message_overlay(void)
-{
-    if (Lvgl_lock(-1)) {
-        dashboard_ui_hide_message_overlay();
-        Lvgl_unlock();
-    }
-
-    state_lock();
-    message_overlay_active = false;
-    message_overlay_requires_key = false;
-    message_overlay_expire_at_us = 0;
-    state_unlock();
-
-    sync_message_input_power_lock();
-}
-
-static void ui_format_ticker_message(const char *title, const char *message, char *ticker_text, size_t ticker_text_size)
-{
-    if (ticker_text == NULL || ticker_text_size == 0) {
-        return;
-    }
-
-    if (title != NULL && title[0] != '\0' && message != NULL && message[0] != '\0') {
-        snprintf(ticker_text, ticker_text_size, "【%s】%s", title, message);
-    } else if (title != NULL && title[0] != '\0') {
-        snprintf(ticker_text, ticker_text_size, "【%s】", title);
-    } else {
-        snprintf(ticker_text, ticker_text_size, "%s", (message != NULL) ? message : "");
-    }
-}
-
-static void ui_show_ticker_message(const char *title, const char *message, int timeout_seconds)
-{
-    char ticker_text[MQTT_TICKER_TEXT_MAX_LEN];
-
-    ui_format_ticker_message(title, message, ticker_text, sizeof(ticker_text));
-
-    if (Lvgl_lock(-1)) {
-        dashboard_ui_show_ticker_message(ticker_text);
-        Lvgl_unlock();
-    }
-
-    state_lock();
-    ticker_message_active = true;
-    ticker_message_requires_key = (timeout_seconds == 0);
-    if (timeout_seconds > 0) {
-        ticker_message_expire_at_us = esp_timer_get_time() + ((int64_t)timeout_seconds * 1000000LL);
-    } else {
-        ticker_message_expire_at_us = 0;
-    }
-    state_unlock();
-
-    sync_message_input_power_lock();
-}
-
-static void ui_show_marquee_ticker_message(const char *title, const char *message, int timeout_seconds)
-{
-    char ticker_text[MQTT_TICKER_TEXT_MAX_LEN];
-
-    ui_format_ticker_message(title, message, ticker_text, sizeof(ticker_text));
-
-    if (Lvgl_lock(-1)) {
-        dashboard_ui_show_marquee_ticker_message(ticker_text);
-        Lvgl_unlock();
-    }
-
-    state_lock();
-    ticker_message_active = true;
-    ticker_message_requires_key = (timeout_seconds == 0);
-    if (timeout_seconds > 0) {
-        ticker_message_expire_at_us = esp_timer_get_time() + ((int64_t)timeout_seconds * 1000000LL);
-    } else {
-        ticker_message_expire_at_us = 0;
-    }
-    state_unlock();
-
-    sync_message_input_power_lock();
-}
-
-static void ui_hide_ticker_message(void)
-{
-    if (Lvgl_lock(-1)) {
-        dashboard_ui_hide_ticker_message();
-        Lvgl_unlock();
-    }
-
-    state_lock();
-    ticker_message_active = false;
-    ticker_message_requires_key = false;
-    ticker_message_expire_at_us = 0;
     state_unlock();
 
     sync_message_input_power_lock();
@@ -1228,7 +1125,7 @@ static void recall_last_message_fullscreen(void)
         title = fallback_title;
     }
 
-    ui_show_message_overlay(title, message.content, 0);
+    ui_show_message(title, message.content, 0);
 }
 
 static void manual_network_sync_task(void *arg)
@@ -1270,24 +1167,15 @@ static void request_manual_network_sync(void)
 
 static void handle_short_key_press(void)
 {
-    bool local_overlay_active;
-    bool local_ticker_active;
     bool local_provisioning;
 
     state_lock();
-    local_overlay_active = message_overlay_active;
-    local_ticker_active = ticker_message_active;
     local_provisioning = prov_active;
     state_unlock();
 
     if (local_provisioning) {
         ui_set_status_message("Leaving provisioning...");
         schedule_provisioning_action(false, true);
-    } else if (local_overlay_active) {
-        ui_hide_message_overlay();
-    } else if (local_ticker_active) {
-        ui_hide_ticker_message();
-        recall_last_message_fullscreen();
     } else {
         recall_last_message_fullscreen();
     }
@@ -1420,29 +1308,21 @@ static void mqtt_handle_received_message(const char *payload)
         return;
     }
 
+    if (message.type == 4) {
+        if (Lvgl_lock(-1)) {
+            dashboard_ui_update_kv(message.content);
+            Lvgl_unlock();
+        }
+        return;
+    }
+
     cache_last_message(&message);
 
     if (message.beep_type != AUDIO_BEEP_TYPE_NONE) {
         audio_request_notification_beep(message.beep_type);
     }
 
-    switch (message.type) {
-        case 1:
-            ui_show_message_overlay(message.title, message.content, message.timeout_seconds);
-            break;
-
-        case 2:
-            ui_show_ticker_message(message.title, message.content, message.timeout_seconds);
-            break;
-
-        case 3:
-            ui_show_marquee_ticker_message(message.title, message.content, message.timeout_seconds);
-            break;
-
-        default:
-            ui_set_statusf("Unsupported MQTT type: %d", message.type);
-            break;
-    }
+    ui_show_message(message.title, message.content, message.timeout_seconds);
 }
 
 static void html_escape(const char *src, char *dst, size_t dst_size)
@@ -3080,7 +2960,6 @@ static void ui_housekeeping_task(void *arg)
     while (1) {
         bool clear_status = false;
         bool hide_overlay = false;
-        bool hide_ticker = false;
         bool local_mqtt_connected = false;
         int64_t now = esp_timer_get_time();
 
@@ -3094,10 +2973,6 @@ static void ui_housekeeping_task(void *arg)
             message_overlay_expire_at_us = 0;
             hide_overlay = true;
         }
-        if (ticker_message_expire_at_us > 0 && now >= ticker_message_expire_at_us) {
-            ticker_message_expire_at_us = 0;
-            hide_ticker = true;
-        }
         state_unlock();
 
         if (clear_status) {
@@ -3105,11 +2980,11 @@ static void ui_housekeeping_task(void *arg)
         }
 
         if (hide_overlay) {
-            ui_hide_message_overlay();
-        }
-
-        if (hide_ticker) {
-            ui_hide_ticker_message();
+            state_lock();
+            message_overlay_active = false;
+            message_overlay_requires_key = false;
+            state_unlock();
+            sync_message_input_power_lock();
         }
 
         if (!mqtt_icon_initialized || local_mqtt_connected != last_mqtt_icon_connected) {
@@ -3161,6 +3036,7 @@ static void clock_task(void *arg)
                 Lvgl_unlock();
             }
         }
+
         vTaskDelay(pdMS_TO_TICKS(CLOCK_UPDATE_PERIOD_MS));
     }
 }
@@ -3349,17 +3225,7 @@ static void boot_button_task(void *arg)
             boot_button_long_handled = false;
         } else if (!boot_pressed_now && boot_button_pressed) {
             if (!boot_button_long_handled) {
-                bool local_overlay_active;
-
-                state_lock();
-                local_overlay_active = message_overlay_active;
-                state_unlock();
-
-                if (local_overlay_active) {
-                    ui_hide_message_overlay();
-                } else {
-                    handle_short_boot_press();
-                }
+                handle_short_boot_press();
             }
             boot_button_pressed = false;
             boot_button_long_handled = false;

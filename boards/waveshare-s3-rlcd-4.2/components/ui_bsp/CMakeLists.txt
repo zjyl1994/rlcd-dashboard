@@ -2,5 +2,6 @@ file(GLOB_RECURSE scrld ./*.c)
 idf_component_register(
     SRCS ${scrld}
     REQUIRES lvgl__lvgl
-    INCLUDE_DIRS ".")
+    INCLUDE_DIRS "."
+    EMBED_FILES "SmileySans-Oblique.ttf")
 target_compile_definitions(${COMPONENT_LIB} PRIVATE LV_LVGL_H_INCLUDE_SIMPLE)

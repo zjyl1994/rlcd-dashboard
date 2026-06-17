@@ -1,31 +1,41 @@
 #include "dashboard_ui.h"
-#include "unifont_16.h"
+#include "libs/tiny_ttf/lv_tiny_ttf.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #define UI_BG_COLOR lv_color_white()
 #define UI_FG_COLOR lv_color_black()
-#define CELSIUS_SYMBOL "\xE2\x84\x83"
 #define SCREEN_WIDTH 400
 #define SCREEN_HEIGHT 300
-#define TOP_ROW_Y 8
-#define TOP_ITEM_GAP 8
-#define TEMP_LABEL_X 10
-#define TEMP_LABEL_WIDTH 104
-#define DATE_LABEL_X 156
-#define DATE_LABEL_Y TOP_ROW_Y
-#define DATE_LABEL_WIDTH 88
-#define SECOND_LABEL_X 144
-#define SECOND_LABEL_Y 244
-#define SECOND_LABEL_WIDTH 112
-#define TOP_ICON_Y 11
-#define TOP_ICON_HEIGHT 14
-#define MQTT_BADGE_X 326
-#define WIFI_ICON_X 344
+#define H_SPLIT_Y 134
+#define V_SPLIT_X 196
+
+/* top-left: clock + date */
+#define CLOCK_X 0
+#define CLOCK_Y 0
+#define CLOCK_W V_SPLIT_X
+#define CLOCK_H H_SPLIT_Y
+#define CLOCK_LABEL_Y 10
+#define DATE_LABEL_Y 92
+#define CLOCK_FONT_SIZE 72
+#define DATE_FONT_SIZE 18
+
+/* top-right: status area */
+#define STATUS_X (V_SPLIT_X + 1)
+#define STATUS_Y 0
+#define STATUS_W (SCREEN_WIDTH - V_SPLIT_X - 1)
+#define STATUS_H H_SPLIT_Y
+#define TOP_ROW_Y 4
+#define TOP_ICON_Y 4
+#define TOP_ICON_H 14
+#define TEMP_LABEL_X (STATUS_X + 8)
+#define TEMP_LABEL_W 120
+#define MQTT_BADGE_X 338
 #define MQTT_BADGE_Y TOP_ICON_Y
-#define MQTT_BADGE_SIZE TOP_ICON_HEIGHT
-#define WIFI_BAR_WIDTH 3
+#define MQTT_BADGE_SZ TOP_ICON_H
+#define WIFI_ICON_X 356
+#define WIFI_BAR_W 3
 #define WIFI_BAR_STEP 4
 #define WIFI_BAR_0_Y (TOP_ICON_Y + 10)
 #define WIFI_BAR_0_H 4
@@ -35,10 +45,10 @@
 #define WIFI_BAR_2_H 10
 #define WIFI_BAR_3_Y (TOP_ICON_Y + 1)
 #define WIFI_BAR_3_H 13
-#define BATTERY_OUTLINE_X 363
+#define BATTERY_OUTLINE_X 374
 #define BATTERY_OUTLINE_Y TOP_ICON_Y
 #define BATTERY_OUTLINE_W 18
-#define BATTERY_OUTLINE_H TOP_ICON_HEIGHT
+#define BATTERY_OUTLINE_H TOP_ICON_H
 #define BATTERY_CAP_X (BATTERY_OUTLINE_X + BATTERY_OUTLINE_W)
 #define BATTERY_CAP_Y (TOP_ICON_Y + 4)
 #define BATTERY_CAP_W 2
@@ -47,102 +57,59 @@
 #define BATTERY_FILL_Y (BATTERY_OUTLINE_Y + 3)
 #define BATTERY_FILL_H 8
 #define BATTERY_FILL_MAX_W 12
-#define CLOCK_REGION_TOP (TOP_ICON_Y + TOP_ICON_HEIGHT)
-#define CLOCK_REGION_BOTTOM SECOND_LABEL_Y
-#define CLOCK_CANVAS_HEIGHT 152
-#define CLOCK_DIGIT_Y 12
-#define CLOCK_DIGIT_WIDTH 66
-#define CLOCK_DIGIT_HEIGHT 128
-#define CLOCK_SEGMENT_THICKNESS 12
-#define CLOCK_HORIZONTAL_X_OFFSET 0
-#define CLOCK_HORIZONTAL_LENGTH CLOCK_DIGIT_WIDTH
-#define CLOCK_MIDDLE_SEGMENT_Y 58
-#define CLOCK_BOTTOM_SEGMENT_Y 116
-#define CLOCK_VERTICAL_UPPER_Y 0
-#define CLOCK_VERTICAL_UPPER_LENGTH (CLOCK_MIDDLE_SEGMENT_Y + CLOCK_SEGMENT_THICKNESS)
-#define CLOCK_VERTICAL_LOWER_Y CLOCK_MIDDLE_SEGMENT_Y
-#define CLOCK_VERTICAL_LOWER_LENGTH (CLOCK_DIGIT_HEIGHT - CLOCK_VERTICAL_LOWER_Y)
-#define CLOCK_SIDE_PADDING 4
-#define CLOCK_DIGIT_GAP 22
-#define CLOCK_COLON_GAP 26
-#define CLOCK_DIGIT_X0 CLOCK_SIDE_PADDING
-#define CLOCK_DIGIT_X1 (CLOCK_DIGIT_X0 + CLOCK_DIGIT_WIDTH + CLOCK_DIGIT_GAP)
-#define CLOCK_COLON_X (CLOCK_DIGIT_X1 + CLOCK_DIGIT_WIDTH + CLOCK_COLON_GAP)
-#define CLOCK_COLON_CENTER_X (CLOCK_COLON_X + (CLOCK_COLON_SIZE / 2))
-#define CLOCK_DIGIT_X2 (CLOCK_COLON_X + CLOCK_COLON_SIZE + CLOCK_COLON_GAP)
-#define CLOCK_DIGIT_X3 (CLOCK_DIGIT_X2 + CLOCK_DIGIT_WIDTH + CLOCK_DIGIT_GAP)
-#define CLOCK_CANVAS_WIDTH (CLOCK_DIGIT_X3 + CLOCK_DIGIT_WIDTH + CLOCK_SIDE_PADDING)
-#define CLOCK_CANVAS_X ((SCREEN_WIDTH - CLOCK_CANVAS_WIDTH) / 2)
-#define CLOCK_CANVAS_Y (CLOCK_REGION_TOP + (((CLOCK_REGION_BOTTOM - CLOCK_REGION_TOP) - CLOCK_CANVAS_HEIGHT) / 2))
-#define CLOCK_COLON_TOP_CENTER_Y 50
-#define CLOCK_COLON_BOTTOM_CENTER_Y 96
-#define CLOCK_COLON_SIZE 8
-#define TICKER_VIEW_X 10
-#define TICKER_VIEW_Y 280
-#define TICKER_VIEW_WIDTH 380
-#define TICKER_VIEW_HEIGHT 16
-#define TICKER_TEXT_INSET_X 4
-#define TICKER_TEXT_WIDTH (TICKER_VIEW_WIDTH - (TICKER_TEXT_INSET_X * 2))
-#define TICKER_PAGE_INTERVAL_MS 2500
-#define TICKER_TEXT_MAX_LEN 640
-#define TICKER_PAGE_MAX_COUNT 48
-#define TICKER_PAGE_MAX_LEN 128
-#define TICKER_MARQUEE_SPEED_PX_PER_SEC 80
-#define TICKER_MARQUEE_LEAD_SPACE_EXTRA 2
-#define MESSAGE_TITLE_BAR_HEIGHT 20
-#define MESSAGE_TITLE_LABEL_Y 2
-#define MESSAGE_TITLE_SCALE 256
-#define CLOCK_CANVAS_PALETTE_BYTES (LV_COLOR_INDEXED_PALETTE_SIZE(LV_COLOR_FORMAT_I1) * sizeof(lv_color32_t))
-#define CLOCK_CANVAS_STRIDE_BYTES ((CLOCK_CANVAS_WIDTH + 7) >> 3)
-#define CLOCK_DIGIT_BITMAP_STRIDE ((CLOCK_DIGIT_WIDTH + 7) >> 3)
-#define CLOCK_COLON_BITMAP_WIDTH CLOCK_COLON_SIZE
-#define CLOCK_COLON_BITMAP_HEIGHT CLOCK_CANVAS_HEIGHT
-#define CLOCK_COLON_BITMAP_STRIDE ((CLOCK_COLON_BITMAP_WIDTH + 7) >> 3)
+/* KV display in top-right below icons */
+#define KV_LABEL_X (STATUS_X + 14)
+#define KV_LABEL_Y 30
+#define KV_LABEL_W (STATUS_W - 28)
+#define KV_LABEL_H (H_SPLIT_Y - KV_LABEL_Y - 2)
+#define KV_PAGE_INTERVAL_MS 10000
+#define KV_MAX_LINES 48
+#define KV_MAX_LINE_LEN 80
+
+/* bottom: message area */
+#define MSG_X 8
+#define MSG_Y (H_SPLIT_Y + 6)
+#define MSG_W (SCREEN_WIDTH - 16)
+#define MSG_H (SCREEN_HEIGHT - H_SPLIT_Y - 10)
+#define MSG_TITLE_Y (H_SPLIT_Y + 4)
+#define MSG_CONTENT_Y (H_SPLIT_Y + 32)
+#define MSG_FONT_SIZE 24
+
+/* provisioning (same as before) */
+#define STAT_LABEL_Y (SCREEN_HEIGHT - 16)
 
 static lv_obj_t *screen_obj;
-static lv_obj_t *clock_view;
+static lv_obj_t *main_view;
 static lv_obj_t *prov_view;
-static lv_obj_t *temp_humi_label;
-static lv_obj_t *clock_canvas;
+static lv_obj_t *clock_label;
 static lv_obj_t *date_label;
-static lv_obj_t *second_label;
+static lv_obj_t *temp_humi_label;
+static lv_obj_t *wifi_bars[4];
+static lv_obj_t *wifi_mqtt_badge;
+static lv_obj_t *battery_fill;
+static lv_obj_t *msg_title_label;
+static lv_obj_t *msg_content_label;
 static lv_obj_t *status_label;
-static lv_obj_t *ticker_view;
-static lv_obj_t *ticker_label;
 static lv_obj_t *prov_title_label;
 static lv_obj_t *prov_ssid_label;
 static lv_obj_t *prov_ip_label;
 static lv_obj_t *prov_hint_label;
-static lv_obj_t *wifi_bars[4];
-static lv_obj_t *wifi_mqtt_badge;
-static lv_obj_t *battery_fill;
-static lv_obj_t *message_view;
-static lv_obj_t *message_title_bar;
-static lv_obj_t *message_title_label;
-static lv_obj_t *message_content_view;
-static lv_obj_t *message_label;
+static lv_font_t *font_clock = NULL;
+static lv_font_t *font_msg = NULL;
+static lv_font_t *font_date = NULL;
+static lv_obj_t *kv_label;
+static lv_timer_t *kv_timer = NULL;
+static char kv_lines[KV_MAX_LINES][KV_MAX_LINE_LEN];
+static int kv_line_count = 0;
+static int kv_lines_per_page = 0;
+static int kv_page_count = 0;
+static int kv_current_page = 0;
+static bool mqtt_badge_connected = false;
 static int last_clock_hour = -1;
 static int last_clock_minute = -1;
-static int last_clock_colon_visible = -1;
-static bool clock_bitmap_cache_ready = false;
-static bool mqtt_badge_connected = false;
-static lv_timer_t *ticker_timer = NULL;
-static char ticker_pages[TICKER_PAGE_MAX_COUNT][TICKER_PAGE_MAX_LEN] = {{0}};
-static uint16_t ticker_page_count = 0;
-static uint16_t ticker_page_index = 0;
-static bool ticker_marquee_active = false;
 
-static uint8_t clock_digit_bitmaps[10][CLOCK_DIGIT_BITMAP_STRIDE * CLOCK_DIGIT_HEIGHT];
-static uint8_t clock_colon_bitmap[CLOCK_COLON_BITMAP_STRIDE * CLOCK_COLON_BITMAP_HEIGHT];
-static int clock_digit_visible_left[10];
-static int clock_digit_visible_right[10];
-
-LV_DRAW_BUF_DEFINE_STATIC(clock_canvas_draw_buf, CLOCK_CANVAS_WIDTH, CLOCK_CANVAS_HEIGHT, LV_COLOR_FORMAT_I1);
-
-static const uint8_t digit_masks[10] = {
-    0x77, 0x24, 0x5d, 0x6d, 0x2e,
-    0x6b, 0x7b, 0x25, 0x7f, 0x6f,
-};
+extern const uint8_t smiley_ttf_start[] asm("_binary_SmileySans_Oblique_ttf_start");
+extern const uint8_t smiley_ttf_end[] asm("_binary_SmileySans_Oblique_ttf_end");
 
 static lv_obj_t *create_box(lv_obj_t *parent, int x, int y, int w, int h, bool outlined)
 {
@@ -154,18 +121,12 @@ static lv_obj_t *create_box(lv_obj_t *parent, int x, int y, int w, int h, bool o
     lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(obj, UI_FG_COLOR, 0);
     lv_obj_set_style_border_width(obj, outlined ? 1 : 0, 0);
-    lv_obj_set_style_radius(obj, 2, 0);
+    lv_obj_set_style_radius(obj, 0, 0);
     lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
     return obj;
 }
 
-static lv_obj_t *create_label_with_font(
-    lv_obj_t *parent,
-    int x,
-    int y,
-    int w,
-    lv_text_align_t align,
-    const lv_font_t *font)
+static lv_obj_t *create_label(lv_obj_t *parent, int x, int y, int w, lv_text_align_t align, const lv_font_t *font)
 {
     lv_obj_t *label = lv_label_create(parent);
     lv_obj_set_pos(label, x, y);
@@ -178,220 +139,36 @@ static lv_obj_t *create_label_with_font(
     return label;
 }
 
-static lv_obj_t *create_label(lv_obj_t *parent, int x, int y, int w, lv_text_align_t align)
+static void set_box_filled(lv_obj_t *obj, bool filled)
 {
-    return create_label_with_font(parent, x, y, w, align, &unifont_16);
+    lv_obj_set_style_bg_color(obj, filled ? UI_FG_COLOR : UI_BG_COLOR, 0);
+    lv_obj_set_style_border_width(obj, filled ? 0 : 1, 0);
 }
 
-static size_t ticker_utf8_char_len(const char *text)
+static void set_wifi_level(bool connected, int level)
 {
-    unsigned char ch = (unsigned char)text[0];
-
-    if ((ch & 0x80U) == 0) {
-        return 1;
+    for (int index = 0; index < 4; index++) {
+        bool active = connected && index < level;
+        set_box_filled(wifi_bars[index], active);
     }
-    if ((ch & 0xE0U) == 0xC0U) {
-        return 2;
-    }
-    if ((ch & 0xF0U) == 0xE0U) {
-        return 3;
-    }
-    if ((ch & 0xF8U) == 0xF0U) {
-        return 4;
-    }
-
-    return 1;
 }
 
-static bool ticker_line_fits(const char *text)
+static void set_battery_level(int level)
 {
-    lv_point_t text_size = {0, 0};
-    lv_text_get_size(&text_size, text, &unifont_16, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_EXPAND);
-    return text_size.x <= TICKER_TEXT_WIDTH;
-}
-
-static void ticker_stop_marquee(void)
-{
-    if (ticker_label == NULL) {
-        return;
+    int width = 0;
+    if (level > 0) {
+        width = (level * BATTERY_FILL_MAX_W) / 100;
+        if (width < 2) width = 2;
     }
-
-    lv_anim_delete(ticker_label, NULL);
-}
-
-static void ticker_reset_label_layout(void)
-{
-    if (ticker_label == NULL) {
-        return;
-    }
-
-    lv_obj_set_pos(ticker_label, TICKER_TEXT_INSET_X, 0);
-    lv_obj_set_size(ticker_label, TICKER_TEXT_WIDTH, TICKER_VIEW_HEIGHT);
-    lv_obj_set_style_text_align(ticker_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_anim_duration(ticker_label, 0, 0);
-    lv_label_set_long_mode(ticker_label, LV_LABEL_LONG_CLIP);
-}
-
-static void ticker_normalize_marquee_text(const char *message, char *buffer, size_t buffer_size)
-{
-    const char *src = (message != NULL) ? message : "";
-    int32_t space_width = lv_font_get_glyph_width(&unifont_16, ' ', ' ');
-    size_t lead_space_count;
-    size_t out = 0;
-
-    if (buffer_size == 0) {
-        return;
-    }
-
-    if (space_width <= 0) {
-        space_width = 4;
-    }
-    lead_space_count = (size_t)((TICKER_TEXT_WIDTH + space_width - 1) / space_width) + TICKER_MARQUEE_LEAD_SPACE_EXTRA;
-    while (lead_space_count > 0 && out + 1 < buffer_size) {
-        buffer[out++] = ' ';
-        lead_space_count--;
-    }
-
-    while (*src != '\0' && out + 1 < buffer_size) {
-        if (*src == '\r' || *src == '\n' || *src == '\t') {
-            if (out > 0 && buffer[out - 1] != ' ') {
-                buffer[out++] = ' ';
-            }
-            src++;
-            continue;
-        }
-
-        buffer[out++] = *src++;
-    }
-
-    buffer[out] = '\0';
-}
-
-static void ticker_start_marquee(const char *message)
-{
-    char normalized_text[TICKER_TEXT_MAX_LEN] = {0};
-
-    if (ticker_label == NULL) {
-        return;
-    }
-
-    ticker_stop_marquee();
-    memset(ticker_pages, 0, sizeof(ticker_pages));
-    ticker_page_count = 0;
-    ticker_page_index = 0;
-
-    ticker_normalize_marquee_text(message, normalized_text, sizeof(normalized_text));
-    if (normalized_text[0] == '\0') {
-        strlcpy(normalized_text, " ", sizeof(normalized_text));
-    }
-
-    lv_obj_set_pos(ticker_label, TICKER_TEXT_INSET_X, 0);
-    lv_obj_set_size(ticker_label, TICKER_TEXT_WIDTH, TICKER_VIEW_HEIGHT);
-    lv_obj_set_style_text_align(ticker_label, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_style_anim_duration(ticker_label, lv_anim_speed(TICKER_MARQUEE_SPEED_PX_PER_SEC), 0);
-    lv_label_set_long_mode(ticker_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_label_set_text(ticker_label, normalized_text);
-}
-
-static void ticker_apply_current_page(void)
-{
-    if (ticker_label == NULL) {
-        return;
-    }
-
-    if (ticker_page_count == 0) {
-        lv_label_set_text(ticker_label, "");
-        return;
-    }
-
-    lv_label_set_text(ticker_label, ticker_pages[ticker_page_index]);
-}
-
-static void ticker_commit_page(const char *line)
-{
-    if (ticker_page_count >= TICKER_PAGE_MAX_COUNT) {
-        return;
-    }
-
-    strlcpy(ticker_pages[ticker_page_count], (line != NULL) ? line : "", sizeof(ticker_pages[0]));
-    ticker_page_count++;
-}
-
-static void ticker_prepare_text(const char *message)
-{
-    char line[TICKER_PAGE_MAX_LEN] = {0};
-    size_t line_len = 0;
-    const char *cursor = (message != NULL) ? message : "";
-
-    memset(ticker_pages, 0, sizeof(ticker_pages));
-    ticker_page_count = 0;
-    ticker_page_index = 0;
-
-    while (*cursor != '\0') {
-        if (*cursor == '\n') {
-            ticker_commit_page(line);
-            line[0] = '\0';
-            line_len = 0;
-            cursor++;
-            continue;
-        }
-
-        size_t char_len = ticker_utf8_char_len(cursor);
-        if (line_len + char_len >= sizeof(line)) {
-            ticker_commit_page(line);
-            line[0] = '\0';
-            line_len = 0;
-            continue;
-        }
-
-        char candidate[TICKER_PAGE_MAX_LEN] = {0};
-        memcpy(candidate, line, line_len);
-        memcpy(candidate + line_len, cursor, char_len);
-        candidate[line_len + char_len] = '\0';
-
-        if (line_len > 0 && !ticker_line_fits(candidate)) {
-            ticker_commit_page(line);
-            line[0] = '\0';
-            line_len = 0;
-            continue;
-        }
-
-        memcpy(line + line_len, cursor, char_len);
-        line_len += char_len;
-        line[line_len] = '\0';
-        cursor += char_len;
-    }
-
-    if (line_len > 0 || ticker_page_count == 0) {
-        ticker_commit_page(line);
-    }
-
-    ticker_apply_current_page();
-}
-
-static void ticker_timer_cb(lv_timer_t *timer)
-{
-    LV_UNUSED(timer);
-
-    if (ticker_view == NULL || ticker_label == NULL || ticker_page_count <= 1) {
-        return;
-    }
-    if (lv_obj_has_flag(ticker_view, LV_OBJ_FLAG_HIDDEN)) {
-        return;
-    }
-
-    ticker_page_index = (uint16_t)((ticker_page_index + 1) % ticker_page_count);
-    ticker_apply_current_page();
+    lv_obj_set_width(battery_fill, width);
+    lv_obj_set_style_bg_color(battery_fill, width > 0 ? UI_FG_COLOR : UI_BG_COLOR, 0);
 }
 
 static void mqtt_badge_draw_event_cb(lv_event_t *e)
 {
     lv_obj_t *obj = lv_event_get_target_obj(e);
     lv_layer_t *layer = lv_event_get_layer(e);
-
-    if (obj == NULL || layer == NULL) {
-        return;
-    }
+    if (obj == NULL || layer == NULL) return;
 
     lv_draw_line_dsc_t line_dsc;
     lv_draw_line_dsc_init(&line_dsc);
@@ -422,249 +199,49 @@ static void mqtt_badge_draw_event_cb(lv_event_t *e)
     }
 }
 
-static void bitmap_set_pixel(uint8_t *bitmap, int stride, int width, int height, int x, int y)
-{
-    if (x < 0 || x >= width || y < 0 || y >= height) {
-        return;
-    }
-
-    bitmap[y * stride + (x >> 3)] |= (uint8_t)(1U << (7 - (x & 7)));
-}
-
-static bool bitmap_get_pixel(const uint8_t *bitmap, int stride, int x, int y)
-{
-    return ((bitmap[y * stride + (x >> 3)] >> (7 - (x & 7))) & 0x01U) != 0;
-}
-
-static void bitmap_fill_rect(uint8_t *bitmap, int stride, int width, int height, int x, int y, int w, int h)
-{
-    int x_start = x < 0 ? 0 : x;
-    int y_start = y < 0 ? 0 : y;
-    int x_end = (x + w) > width ? width : (x + w);
-    int y_end = (y + h) > height ? height : (y + h);
-
-    for (int row = y_start; row < y_end; row++) {
-        for (int col = x_start; col < x_end; col++) {
-            bitmap_set_pixel(bitmap, stride, width, height, col, row);
-        }
-    }
-}
-
-static void bitmap_draw_horizontal_segment(uint8_t *bitmap, int stride, int width, int height, int x, int y, int length)
-{
-    bitmap_fill_rect(bitmap, stride, width, height, x, y, length, CLOCK_SEGMENT_THICKNESS);
-}
-
-static void bitmap_draw_vertical_segment(uint8_t *bitmap, int stride, int width, int height, int x, int y, int length)
-{
-    bitmap_fill_rect(bitmap, stride, width, height, x, y, CLOCK_SEGMENT_THICKNESS, length);
-}
-
-static void bitmap_draw_digit_shape(uint8_t *bitmap, int stride, int value)
-{
-    uint8_t mask = (value >= 0 && value <= 9) ? digit_masks[value] : 0;
-
-    if (mask & (1U << 0)) {
-        bitmap_draw_horizontal_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, CLOCK_HORIZONTAL_X_OFFSET, 0, CLOCK_HORIZONTAL_LENGTH);
-    }
-    if (mask & (1U << 1)) {
-        bitmap_draw_vertical_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, 0, CLOCK_VERTICAL_UPPER_Y, CLOCK_VERTICAL_UPPER_LENGTH);
-    }
-    if (mask & (1U << 2)) {
-        bitmap_draw_vertical_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, CLOCK_DIGIT_WIDTH - CLOCK_SEGMENT_THICKNESS, CLOCK_VERTICAL_UPPER_Y, CLOCK_VERTICAL_UPPER_LENGTH);
-    }
-    if (mask & (1U << 3)) {
-        bitmap_draw_horizontal_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, CLOCK_HORIZONTAL_X_OFFSET, CLOCK_MIDDLE_SEGMENT_Y, CLOCK_HORIZONTAL_LENGTH);
-    }
-    if (mask & (1U << 4)) {
-        bitmap_draw_vertical_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, 0, CLOCK_VERTICAL_LOWER_Y, CLOCK_VERTICAL_LOWER_LENGTH);
-    }
-    if (mask & (1U << 5)) {
-        bitmap_draw_vertical_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, CLOCK_DIGIT_WIDTH - CLOCK_SEGMENT_THICKNESS, CLOCK_VERTICAL_LOWER_Y, CLOCK_VERTICAL_LOWER_LENGTH);
-    }
-    if (mask & (1U << 6)) {
-        bitmap_draw_horizontal_segment(bitmap, stride, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT, CLOCK_HORIZONTAL_X_OFFSET, CLOCK_BOTTOM_SEGMENT_Y, CLOCK_HORIZONTAL_LENGTH);
-    }
-}
-
-static void bitmap_draw_colon_shape(uint8_t *bitmap, int stride)
-{
-    int center_x = CLOCK_COLON_BITMAP_WIDTH / 2;
-    int half = CLOCK_COLON_SIZE / 2;
-    int top_y = CLOCK_COLON_TOP_CENTER_Y;
-    int bottom_y = CLOCK_COLON_BOTTOM_CENTER_Y;
-
-    bitmap_fill_rect(bitmap, stride, CLOCK_COLON_BITMAP_WIDTH, CLOCK_COLON_BITMAP_HEIGHT, center_x - half, top_y - half, CLOCK_COLON_SIZE, CLOCK_COLON_SIZE);
-    bitmap_fill_rect(bitmap, stride, CLOCK_COLON_BITMAP_WIDTH, CLOCK_COLON_BITMAP_HEIGHT, center_x - half, bottom_y - half, CLOCK_COLON_SIZE, CLOCK_COLON_SIZE);
-}
-
-static void bitmap_measure_visible_bounds(const uint8_t *bitmap, int stride, int width, int height, int *left, int *right)
-{
-    int min_x = width;
-    int max_x = -1;
-
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            if (!bitmap_get_pixel(bitmap, stride, x, y)) {
-                continue;
-            }
-
-            if (x < min_x) {
-                min_x = x;
-            }
-            if (x > max_x) {
-                max_x = x;
-            }
-        }
-    }
-
-    if (max_x < min_x) {
-        *left = 0;
-        *right = width - 1;
-        return;
-    }
-
-    *left = min_x;
-    *right = max_x;
-}
-
-static void ensure_clock_bitmap_cache(void)
-{
-    if (clock_bitmap_cache_ready) {
-        return;
-    }
-
-    memset(clock_digit_bitmaps, 0, sizeof(clock_digit_bitmaps));
-    memset(clock_colon_bitmap, 0, sizeof(clock_colon_bitmap));
-
-    for (int digit = 0; digit < 10; digit++) {
-        bitmap_draw_digit_shape(clock_digit_bitmaps[digit], CLOCK_DIGIT_BITMAP_STRIDE, digit);
-        bitmap_measure_visible_bounds(
-            clock_digit_bitmaps[digit],
-            CLOCK_DIGIT_BITMAP_STRIDE,
-            CLOCK_DIGIT_WIDTH,
-            CLOCK_DIGIT_HEIGHT,
-            &clock_digit_visible_left[digit],
-            &clock_digit_visible_right[digit]);
-    }
-
-    bitmap_draw_colon_shape(clock_colon_bitmap, CLOCK_COLON_BITMAP_STRIDE);
-    clock_bitmap_cache_ready = true;
-}
-
-static void bitmap_blit(
-    uint8_t *dst,
-    int dst_stride,
-    int dst_width,
-    int dst_height,
-    int dst_x,
-    int dst_y,
-    const uint8_t *src,
-    int src_stride,
-    int src_width,
-    int src_height)
-{
-    for (int y = 0; y < src_height; y++) {
-        int dst_row = dst_y + y;
-
-        if (dst_row < 0 || dst_row >= dst_height) {
-            continue;
-        }
-
-        for (int x = 0; x < src_width; x++) {
-            int dst_col = dst_x + x;
-
-            if (dst_col < 0 || dst_col >= dst_width) {
-                continue;
-            }
-
-            if (bitmap_get_pixel(src, src_stride, x, y)) {
-                bitmap_set_pixel(dst, dst_stride, dst_width, dst_height, dst_col, dst_row);
-            }
-        }
-    }
-}
-
-static void render_clock_canvas(int hour, int minute, bool colon_visible)
-{
-    uint8_t *canvas_buf;
-    uint8_t *canvas_pixels;
-    int digits[4];
-    int slot_x[4] = {CLOCK_DIGIT_X0, CLOCK_DIGIT_X1, CLOCK_DIGIT_X2, CLOCK_DIGIT_X3};
-
-    if (clock_canvas == NULL) {
-        return;
-    }
-
-    ensure_clock_bitmap_cache();
-
-    canvas_buf = (uint8_t *)lv_canvas_get_buf(clock_canvas);
-    canvas_pixels = canvas_buf + CLOCK_CANVAS_PALETTE_BYTES;
-    memset(canvas_pixels, 0x00, CLOCK_CANVAS_STRIDE_BYTES * CLOCK_CANVAS_HEIGHT);
-
-    digits[0] = (hour / 10) % 10;
-    digits[1] = hour % 10;
-    digits[2] = (minute / 10) % 10;
-    digits[3] = minute % 10;
-
-    for (int index = 0; index < 4; index++) {
-        int digit = digits[index];
-        int aligned_x = slot_x[index] + ((CLOCK_DIGIT_WIDTH - 1) - clock_digit_visible_right[digit]);
-
-        bitmap_blit(canvas_pixels, CLOCK_CANVAS_STRIDE_BYTES, CLOCK_CANVAS_WIDTH, CLOCK_CANVAS_HEIGHT,
-            aligned_x, CLOCK_DIGIT_Y,
-            clock_digit_bitmaps[digit], CLOCK_DIGIT_BITMAP_STRIDE, CLOCK_DIGIT_WIDTH, CLOCK_DIGIT_HEIGHT);
-    }
-    if (colon_visible) {
-        bitmap_blit(canvas_pixels, CLOCK_CANVAS_STRIDE_BYTES, CLOCK_CANVAS_WIDTH, CLOCK_CANVAS_HEIGHT,
-            CLOCK_COLON_CENTER_X - (CLOCK_COLON_BITMAP_WIDTH / 2), 0,
-            clock_colon_bitmap, CLOCK_COLON_BITMAP_STRIDE, CLOCK_COLON_BITMAP_WIDTH, CLOCK_COLON_BITMAP_HEIGHT);
-    }
-
-    lv_obj_invalidate(clock_canvas);
-}
-
-static void set_box_filled(lv_obj_t *obj, bool filled)
-{
-    lv_obj_set_style_bg_color(obj, filled ? UI_FG_COLOR : UI_BG_COLOR, 0);
-    lv_obj_set_style_border_width(obj, filled ? 0 : 1, 0);
-}
-
-static void set_wifi_level(bool connected, int level)
-{
-    for (int index = 0; index < 4; index++) {
-        bool active = connected && index < level;
-        set_box_filled(wifi_bars[index], active);
-    }
-}
-
-static void set_battery_level(int level)
-{
-    int width = 0;
-    if (level > 0) {
-        width = (level * BATTERY_FILL_MAX_W) / 100;
-        if (width < 2) {
-            width = 2;
-        }
-    }
-    lv_obj_set_width(battery_fill, width);
-    lv_obj_set_style_bg_color(battery_fill, width > 0 ? UI_FG_COLOR : UI_BG_COLOR, 0);
-}
-
 static void set_mqtt_level(bool connected)
 {
-    if (wifi_mqtt_badge == NULL) {
-        return;
-    }
-
+    if (wifi_mqtt_badge == NULL) return;
     if (mqtt_badge_connected != connected) {
         mqtt_badge_connected = connected;
         lv_obj_invalidate(wifi_mqtt_badge);
     }
 }
 
+static lv_obj_t *create_divider_h(lv_obj_t *parent, int x, int y, int w)
+{
+    lv_obj_t *line = lv_obj_create(parent);
+    lv_obj_remove_style_all(line);
+    lv_obj_set_pos(line, x, y);
+    lv_obj_set_size(line, w, 1);
+    lv_obj_set_style_bg_color(line, UI_FG_COLOR, 0);
+    lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(line, LV_OBJ_FLAG_SCROLLABLE);
+    return line;
+}
+
+static lv_obj_t *create_divider_v(lv_obj_t *parent, int x, int y, int h)
+{
+    lv_obj_t *line = lv_obj_create(parent);
+    lv_obj_remove_style_all(line);
+    lv_obj_set_pos(line, x, y);
+    lv_obj_set_size(line, 1, h);
+    lv_obj_set_style_bg_color(line, UI_FG_COLOR, 0);
+    lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(line, LV_OBJ_FLAG_SCROLLABLE);
+    return line;
+}
+
 void dashboard_ui_init(void)
 {
+    size_t ttf_size = (size_t)(smiley_ttf_end - smiley_ttf_start);
+    font_clock = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, CLOCK_FONT_SIZE);
+    font_msg = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, MSG_FONT_SIZE);
+    font_date = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, DATE_FONT_SIZE);
+    if (font_clock == NULL) font_clock = (lv_font_t *)&lv_font_montserrat_48;
+    if (font_msg == NULL) font_msg = (lv_font_t *)&lv_font_montserrat_24;
+    if (font_date == NULL) font_date = (lv_font_t *)&lv_font_montserrat_14;
+
     screen_obj = lv_obj_create(NULL);
     lv_obj_remove_style_all(screen_obj);
     lv_obj_set_style_bg_color(screen_obj, UI_BG_COLOR, 0);
@@ -672,181 +249,203 @@ void dashboard_ui_init(void)
     lv_obj_clear_flag(screen_obj, LV_OBJ_FLAG_SCROLLABLE);
     lv_scr_load(screen_obj);
 
-    clock_view = create_box(screen_obj, 0, 0, 400, 300, false);
-    prov_view = create_box(screen_obj, 0, 0, 400, 300, false);
+    main_view = create_box(screen_obj, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, false);
+    prov_view = create_box(screen_obj, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, false);
 
-    temp_humi_label = create_label(clock_view, TEMP_LABEL_X, TOP_ROW_Y, TEMP_LABEL_WIDTH, LV_TEXT_ALIGN_LEFT);
-    date_label = create_label(clock_view, DATE_LABEL_X, DATE_LABEL_Y, DATE_LABEL_WIDTH, LV_TEXT_ALIGN_CENTER);
-    second_label = create_label(clock_view, SECOND_LABEL_X, SECOND_LABEL_Y, SECOND_LABEL_WIDTH, LV_TEXT_ALIGN_CENTER);
-    status_label = create_label(screen_obj, 10, 280, 380, LV_TEXT_ALIGN_CENTER);
-    ticker_view = create_box(clock_view, TICKER_VIEW_X, TICKER_VIEW_Y, TICKER_VIEW_WIDTH, TICKER_VIEW_HEIGHT, false);
-    lv_obj_set_style_radius(ticker_view, 0, 0);
-    lv_obj_set_style_text_font(ticker_view, &unifont_16, 0);
-    lv_obj_set_style_text_color(ticker_view, UI_FG_COLOR, 0);
-    lv_obj_set_style_pad_all(ticker_view, 0, 0);
-    ticker_label = create_label(ticker_view, TICKER_TEXT_INSET_X, 0, TICKER_TEXT_WIDTH, LV_TEXT_ALIGN_CENTER);
-    lv_obj_set_height(ticker_label, TICKER_VIEW_HEIGHT);
-    lv_label_set_long_mode(ticker_label, LV_LABEL_LONG_CLIP);
+    /* divider lines */
+    create_divider_h(screen_obj, 0, H_SPLIT_Y, SCREEN_WIDTH);
+    create_divider_v(screen_obj, V_SPLIT_X, 0, H_SPLIT_Y);
 
-    LV_DRAW_BUF_INIT_STATIC(clock_canvas_draw_buf);
-    clock_canvas = lv_canvas_create(clock_view);
-    lv_canvas_set_draw_buf(clock_canvas, &clock_canvas_draw_buf);
-    lv_canvas_set_palette(clock_canvas, 0, lv_color_to_32(UI_BG_COLOR, LV_OPA_COVER));
-    lv_canvas_set_palette(clock_canvas, 1, lv_color_to_32(UI_FG_COLOR, LV_OPA_COVER));
-    lv_obj_set_pos(clock_canvas, CLOCK_CANVAS_X, CLOCK_CANVAS_Y);
-    lv_obj_clear_flag(clock_canvas, LV_OBJ_FLAG_SCROLLABLE);
+    /* ---- top-left: clock + date ---- */
+    clock_label = create_label(main_view, 0, CLOCK_LABEL_Y, CLOCK_W, LV_TEXT_ALIGN_CENTER, font_clock);
+    date_label = create_label(main_view, 0, DATE_LABEL_Y, CLOCK_W, LV_TEXT_ALIGN_CENTER, font_date);
+    lv_label_set_text(clock_label, "--:--");
+    lv_label_set_text(date_label, "----.--.--");
 
-    wifi_bars[0] = create_box(clock_view, WIFI_ICON_X, WIFI_BAR_0_Y, WIFI_BAR_WIDTH, WIFI_BAR_0_H, true);
-    wifi_bars[1] = create_box(clock_view, WIFI_ICON_X + WIFI_BAR_STEP, WIFI_BAR_1_Y, WIFI_BAR_WIDTH, WIFI_BAR_1_H, true);
-    wifi_bars[2] = create_box(clock_view, WIFI_ICON_X + (WIFI_BAR_STEP * 2), WIFI_BAR_2_Y, WIFI_BAR_WIDTH, WIFI_BAR_2_H, true);
-    wifi_bars[3] = create_box(clock_view, WIFI_ICON_X + (WIFI_BAR_STEP * 3), WIFI_BAR_3_Y, WIFI_BAR_WIDTH, WIFI_BAR_3_H, true);
+    /* ---- top-right: status ---- */
+    temp_humi_label = create_label(main_view, TEMP_LABEL_X, TOP_ROW_Y, TEMP_LABEL_W, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
 
-    wifi_mqtt_badge = create_box(clock_view, MQTT_BADGE_X, MQTT_BADGE_Y, MQTT_BADGE_SIZE, MQTT_BADGE_SIZE, false);
+    wifi_bars[0] = create_box(main_view, WIFI_ICON_X, WIFI_BAR_0_Y, WIFI_BAR_W, WIFI_BAR_0_H, true);
+    wifi_bars[1] = create_box(main_view, WIFI_ICON_X + WIFI_BAR_STEP, WIFI_BAR_1_Y, WIFI_BAR_W, WIFI_BAR_1_H, true);
+    wifi_bars[2] = create_box(main_view, WIFI_ICON_X + (WIFI_BAR_STEP * 2), WIFI_BAR_2_Y, WIFI_BAR_W, WIFI_BAR_2_H, true);
+    wifi_bars[3] = create_box(main_view, WIFI_ICON_X + (WIFI_BAR_STEP * 3), WIFI_BAR_3_Y, WIFI_BAR_W, WIFI_BAR_3_H, true);
+
+    wifi_mqtt_badge = create_box(main_view, MQTT_BADGE_X, MQTT_BADGE_Y, MQTT_BADGE_SZ, MQTT_BADGE_SZ, false);
     lv_obj_set_style_bg_opa(wifi_mqtt_badge, LV_OPA_TRANSP, 0);
     lv_obj_set_style_radius(wifi_mqtt_badge, 1, 0);
     lv_obj_add_event_cb(wifi_mqtt_badge, mqtt_badge_draw_event_cb, LV_EVENT_DRAW_MAIN, NULL);
 
-    lv_obj_t *battery_outline = create_box(clock_view, BATTERY_OUTLINE_X, BATTERY_OUTLINE_Y, BATTERY_OUTLINE_W, BATTERY_OUTLINE_H, true);
+    lv_obj_t *battery_outline = create_box(main_view, BATTERY_OUTLINE_X, BATTERY_OUTLINE_Y, BATTERY_OUTLINE_W, BATTERY_OUTLINE_H, true);
     (void)battery_outline;
-    lv_obj_t *battery_cap = create_box(clock_view, BATTERY_CAP_X, BATTERY_CAP_Y, BATTERY_CAP_W, BATTERY_CAP_H, true);
+    lv_obj_t *battery_cap = create_box(main_view, BATTERY_CAP_X, BATTERY_CAP_Y, BATTERY_CAP_W, BATTERY_CAP_H, true);
     lv_obj_set_style_radius(battery_cap, 1, 0);
     (void)battery_cap;
-    battery_fill = create_box(clock_view, BATTERY_FILL_X, BATTERY_FILL_Y, 0, BATTERY_FILL_H, false);
+    battery_fill = create_box(main_view, BATTERY_FILL_X, BATTERY_FILL_Y, 0, BATTERY_FILL_H, false);
 
-    prov_title_label = create_label(prov_view, 40, 42, 320, LV_TEXT_ALIGN_CENTER);
-    prov_ssid_label = create_label(prov_view, 24, 104, 352, LV_TEXT_ALIGN_LEFT);
-    prov_ip_label = create_label(prov_view, 24, 138, 352, LV_TEXT_ALIGN_LEFT);
-    prov_hint_label = create_label(prov_view, 24, 188, 352, LV_TEXT_ALIGN_LEFT);
+    kv_label = create_label(main_view, KV_LABEL_X, KV_LABEL_Y, KV_LABEL_W, LV_TEXT_ALIGN_CENTER, font_msg);
+    lv_obj_set_style_text_line_space(kv_label, 6, 0);
+    lv_obj_set_height(kv_label, KV_LABEL_H);
+    lv_label_set_long_mode(kv_label, LV_LABEL_LONG_CLIP);
 
-    message_view = create_box(screen_obj, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, false);
-    message_title_bar = create_box(message_view, 0, 0, SCREEN_WIDTH, MESSAGE_TITLE_BAR_HEIGHT, false);
-    lv_obj_set_style_bg_color(message_title_bar, UI_FG_COLOR, 0);
-    lv_obj_set_style_bg_opa(message_title_bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(message_title_bar, 0, 0);
-    message_title_label = create_label(message_title_bar, 8, MESSAGE_TITLE_LABEL_Y, 384, LV_TEXT_ALIGN_CENTER);
-    lv_obj_set_style_text_color(message_title_label, UI_BG_COLOR, 0);
-    lv_obj_set_height(message_title_label, 16);
-    lv_obj_set_style_transform_scale(message_title_label, MESSAGE_TITLE_SCALE, 0);
-    lv_obj_set_style_transform_pivot_x(message_title_label, 192, 0);
-    lv_obj_set_style_transform_pivot_y(message_title_label, 8, 0);
-    message_content_view = create_box(message_view, 0, MESSAGE_TITLE_BAR_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - MESSAGE_TITLE_BAR_HEIGHT, false);
-    lv_obj_set_style_radius(message_content_view, 0, 0);
-    message_label = create_label(message_content_view, 20, 12, 360, LV_TEXT_ALIGN_LEFT);
-    lv_label_set_long_mode(message_label, LV_LABEL_LONG_WRAP);
+    /* ---- bottom: message ---- */
+    msg_title_label = create_label(main_view, MSG_X, MSG_TITLE_Y, MSG_W, LV_TEXT_ALIGN_CENTER, font_msg);
+    msg_content_label = create_label(main_view, MSG_X, MSG_CONTENT_Y, MSG_W, LV_TEXT_ALIGN_LEFT, font_msg);
+    lv_obj_set_height(msg_content_label, MSG_H - 30);
+    lv_label_set_long_mode(msg_content_label, LV_LABEL_LONG_WRAP);
 
-    lv_label_set_text(temp_humi_label, "--.-" CELSIUS_SYMBOL "  --%");
-    lv_label_set_text(date_label, "----.--.--");
-    lv_label_set_text(second_label, "SEC --");
+    /* ---- status + provisioning ---- */
+    status_label = create_label(screen_obj, 10, STAT_LABEL_Y, SCREEN_WIDTH - 20, LV_TEXT_ALIGN_CENTER, &lv_font_montserrat_12);
+
+    prov_title_label = create_label(prov_view, 40, 42, 320, LV_TEXT_ALIGN_CENTER, &lv_font_montserrat_24);
+    prov_ssid_label = create_label(prov_view, 24, 104, 352, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
+    prov_ip_label = create_label(prov_view, 24, 138, 352, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
+    prov_hint_label = create_label(prov_view, 24, 188, 352, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
+
+    lv_label_set_text(temp_humi_label, "--.- C  --%");
     lv_label_set_text(status_label, "Booting...");
     lv_label_set_text(prov_title_label, "Provisioning Mode");
     lv_label_set_text(prov_hint_label, "Open 192.168.4.1 in browser\nAdd Wi-Fi credentials\nHold BOOT to exit.");
-    last_clock_hour = -1;
-    last_clock_minute = -1;
-    if (ticker_timer == NULL) {
-        ticker_timer = lv_timer_create(ticker_timer_cb, TICKER_PAGE_INTERVAL_MS, NULL);
-        lv_timer_pause(ticker_timer);
-    }
 
     dashboard_ui_update_battery(0);
     dashboard_ui_update_wifi_status(false, NULL, 0);
     dashboard_ui_update_mqtt_status(false);
-    dashboard_ui_update_time(0, 0, 0);
     lv_obj_add_flag(prov_view, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(clock_view, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(ticker_view, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(message_view, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(main_view, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(prov_ssid_label, "AP SSID: --");
     lv_label_set_text(prov_ip_label, "Address: --");
 }
 
 void dashboard_ui_update_time(int hour, int minute, int second)
 {
-    int colon_visible = 1;
+    if (clock_label == NULL) return;
 
-    if (last_clock_hour != hour || last_clock_minute != minute || last_clock_colon_visible != colon_visible) {
-        render_clock_canvas(hour, minute, colon_visible != 0);
+    if (hour != last_clock_hour || minute != last_clock_minute) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%02d:%02d", hour, minute);
+        lv_label_set_text(clock_label, buf);
         last_clock_hour = hour;
         last_clock_minute = minute;
-        last_clock_colon_visible = colon_visible;
     }
-
-    if (second_label == NULL) {
-        return;
-    }
-    if (ticker_marquee_active) {
-        return;
-    }
-
-    char buffer[16];
-    snprintf(buffer, sizeof(buffer), "SEC %02d", second);
-    lv_label_set_text(second_label, buffer);
+    LV_UNUSED(second);
 }
 
 void dashboard_ui_update_date(int year, int month, int day, int week)
 {
-    if (date_label == NULL) {
+    if (date_label == NULL) return;
+    LV_UNUSED(week);
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%04d.%02d.%02d", year, month, day);
+    lv_label_set_text(date_label, buf);
+}
+
+void dashboard_ui_show_message(const char *title, const char *content)
+{
+    if (msg_title_label == NULL || msg_content_label == NULL) return;
+    lv_label_set_text(msg_title_label, (title != NULL) ? title : "");
+    lv_label_set_text(msg_content_label, (content != NULL) ? content : "");
+}
+
+static void kv_show_page(int page)
+{
+    if (kv_label == NULL || kv_line_count == 0) return;
+    if (page < 0 || page >= kv_page_count) {
+        lv_label_set_text(kv_label, "");
+        return;
+    }
+    int start = page * kv_lines_per_page;
+    int end = start + kv_lines_per_page;
+    if (end > kv_line_count) end = kv_line_count;
+    size_t offset = 0;
+    char buf[512];
+    for (int i = start; i < end && offset < sizeof(buf) - 1; i++) {
+        int n = snprintf(buf + offset, sizeof(buf) - offset, "%s\n", kv_lines[i]);
+        if (n > 0) offset += n;
+        if (offset >= sizeof(buf) - 1) break;
+    }
+    if (offset > 0 && buf[offset - 1] == '\n') buf[offset - 1] = '\0';
+    lv_label_set_text(kv_label, buf);
+}
+
+static void kv_timer_cb(lv_timer_t *timer)
+{
+    LV_UNUSED(timer);
+    if (kv_page_count <= 1) return;
+    kv_current_page = (kv_current_page + 1) % kv_page_count;
+    kv_show_page(kv_current_page);
+}
+
+void dashboard_ui_update_kv(const char *kv_text)
+{
+    if (kv_label == NULL) return;
+
+    if (kv_timer != NULL) {
+        lv_timer_pause(kv_timer);
+    }
+    kv_line_count = 0;
+    kv_page_count = 0;
+    kv_current_page = 0;
+
+    if (kv_text == NULL || kv_text[0] == '\0') {
+        lv_label_set_text(kv_label, "");
         return;
     }
 
-    LV_UNUSED(week);
-    char buffer[24];
-    snprintf(buffer, sizeof(buffer), "%04d.%02d.%02d", year, month, day);
-    lv_label_set_text(date_label, buffer);
+    const char *p = kv_text;
+    while (*p != '\0' && kv_line_count < KV_MAX_LINES) {
+        const char *nl = strchr(p, '\n');
+        int len = (nl != NULL) ? (int)(nl - p) : (int)strlen(p);
+        if (len > KV_MAX_LINE_LEN - 1) len = KV_MAX_LINE_LEN - 1;
+        memcpy(kv_lines[kv_line_count], p, len);
+        kv_lines[kv_line_count][len] = '\0';
+        kv_line_count++;
+        if (nl != NULL) p = nl + 1;
+        else break;
+    }
+
+    if (kv_line_count > 0) {
+        kv_lines_per_page = 3;
+        kv_page_count = (kv_line_count + kv_lines_per_page - 1) / kv_lines_per_page;
+        kv_show_page(0);
+        if (kv_page_count > 1) {
+            if (kv_timer == NULL) {
+                kv_timer = lv_timer_create(kv_timer_cb, KV_PAGE_INTERVAL_MS, NULL);
+            } else {
+                lv_timer_reset(kv_timer);
+            }
+            lv_timer_resume(kv_timer);
+        }
+    } else {
+        lv_label_set_text(kv_label, "");
+    }
 }
 
 void dashboard_ui_update_temp_humi(float temp, float humi)
 {
-    if (temp_humi_label == NULL) {
-        return;
-    }
-
-    char buffer[32];
-    snprintf(buffer, sizeof(buffer), "%2.1f" CELSIUS_SYMBOL "  %2.0f%%", temp, humi);
-    lv_label_set_text(temp_humi_label, buffer);
+    if (temp_humi_label == NULL) return;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%2.1f C  %2.0f%%", temp, humi);
+    lv_label_set_text(temp_humi_label, buf);
 }
 
 void dashboard_ui_update_wifi_status(bool connected, const char *ssid, int rssi)
 {
-    if (wifi_bars[0] == NULL) {
-        return;
-    }
-
-    LV_UNUSED(ssid);
+    if (wifi_bars[0] == NULL) return;
     int level = 0;
-
     if (connected) {
-        if (rssi >= -55) {
-            level = 4;
-        } else if (rssi >= -67) {
-            level = 3;
-        } else if (rssi >= -75) {
-            level = 2;
-        } else {
-            level = 1;
-        }
+        if (rssi >= -55) level = 4;
+        else if (rssi >= -67) level = 3;
+        else if (rssi >= -75) level = 2;
+        else level = 1;
     }
-
     set_wifi_level(connected, level);
 }
 
 void dashboard_ui_update_battery(int level)
 {
-    if (battery_fill == NULL) {
-        return;
-    }
-
-    if (level < 0) {
-        level = 0;
-    }
-    if (level > 100) {
-        level = 100;
-    }
+    if (battery_fill == NULL) return;
+    if (level < 0) level = 0;
+    if (level > 100) level = 100;
     set_battery_level(level);
-}
-
-void dashboard_ui_update_sound_mode(int mode)
-{
-    LV_UNUSED(mode);
 }
 
 void dashboard_ui_update_mqtt_status(bool connected)
@@ -856,30 +455,28 @@ void dashboard_ui_update_mqtt_status(bool connected)
 
 void dashboard_ui_set_provisioning(bool active, const char *ap_ssid, const char *ap_ip)
 {
-    if (clock_view == NULL || prov_view == NULL || prov_ssid_label == NULL || prov_ip_label == NULL) {
-        return;
-    }
+    if (main_view == NULL || prov_view == NULL || prov_ssid_label == NULL || prov_ip_label == NULL) return;
 
     if (active) {
-        lv_obj_add_flag(clock_view, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(main_view, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(prov_view, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(prov_view, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(clock_view, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(main_view, LV_OBJ_FLAG_HIDDEN);
     }
 
     if (ap_ssid != NULL) {
-        char buffer[96];
-        snprintf(buffer, sizeof(buffer), "AP SSID: %s", ap_ssid);
-        lv_label_set_text(prov_ssid_label, buffer);
+        char buf[96];
+        snprintf(buf, sizeof(buf), "AP SSID: %s", ap_ssid);
+        lv_label_set_text(prov_ssid_label, buf);
     } else {
         lv_label_set_text(prov_ssid_label, "AP SSID: --");
     }
 
     if (ap_ip != NULL) {
-        char buffer[96];
-        snprintf(buffer, sizeof(buffer), "Address: http://%s", ap_ip);
-        lv_label_set_text(prov_ip_label, buffer);
+        char buf[96];
+        snprintf(buf, sizeof(buf), "Address: http://%s", ap_ip);
+        lv_label_set_text(prov_ip_label, buf);
     } else {
         lv_label_set_text(prov_ip_label, "Address: --");
     }
@@ -887,95 +484,6 @@ void dashboard_ui_set_provisioning(bool active, const char *ap_ssid, const char 
 
 void dashboard_ui_set_status_message(const char *message)
 {
-    if (status_label == NULL) {
-        return;
-    }
-
+    if (status_label == NULL) return;
     lv_label_set_text(status_label, (message != NULL) ? message : "");
-}
-
-void dashboard_ui_show_ticker_message(const char *message)
-{
-    if (ticker_view == NULL || ticker_label == NULL) {
-        return;
-    }
-
-    ticker_stop_marquee();
-    ticker_reset_label_layout();
-    ticker_marquee_active = false;
-    ticker_prepare_text(message);
-    lv_obj_clear_flag(ticker_view, LV_OBJ_FLAG_HIDDEN);
-    if (ticker_timer != NULL) {
-        if (ticker_page_count > 1) {
-            lv_timer_resume(ticker_timer);
-            lv_timer_reset(ticker_timer);
-        } else {
-            lv_timer_pause(ticker_timer);
-        }
-    }
-    if (status_label != NULL) {
-        lv_obj_add_flag(status_label, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-void dashboard_ui_show_marquee_ticker_message(const char *message)
-{
-    if (ticker_view == NULL || ticker_label == NULL) {
-        return;
-    }
-
-    if (ticker_timer != NULL) {
-        lv_timer_pause(ticker_timer);
-    }
-    ticker_marquee_active = true;
-    ticker_start_marquee(message);
-    lv_obj_clear_flag(ticker_view, LV_OBJ_FLAG_HIDDEN);
-    if (status_label != NULL) {
-        lv_obj_add_flag(status_label, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-void dashboard_ui_hide_ticker_message(void)
-{
-    if (ticker_view == NULL) {
-        return;
-    }
-
-    if (ticker_timer != NULL) {
-        lv_timer_pause(ticker_timer);
-    }
-    ticker_marquee_active = false;
-    ticker_stop_marquee();
-    ticker_reset_label_layout();
-    memset(ticker_pages, 0, sizeof(ticker_pages));
-    ticker_page_count = 0;
-    ticker_page_index = 0;
-    if (ticker_label != NULL) {
-        lv_label_set_text(ticker_label, "");
-    }
-    lv_obj_add_flag(ticker_view, LV_OBJ_FLAG_HIDDEN);
-    if (status_label != NULL) {
-        lv_obj_clear_flag(status_label, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-void dashboard_ui_show_message_overlay(const char *title, const char *message)
-{
-    if (message_view == NULL || message_label == NULL || message_title_label == NULL) {
-        return;
-    }
-
-    lv_label_set_text(message_title_label, (title != NULL) ? title : "");
-    lv_label_set_text(message_label, (message != NULL) ? message : "");
-    lv_obj_move_foreground(message_view);
-    lv_obj_clear_flag(message_view, LV_OBJ_FLAG_HIDDEN);
-}
-
-void dashboard_ui_hide_message_overlay(void)
-{
-    if (message_view == NULL) {
-        return;
-    }
-
-    lv_obj_add_flag(message_view, LV_OBJ_FLAG_HIDDEN);
 }
