@@ -583,7 +583,7 @@ static void tl_blink_cb(lv_timer_t *t)
 
 void dashboard_ui_update_traffic_light(int group, int state)
 {
-    if (group < 0 || group > 1 || state < 1 || state > 3) return;
+    if (group < 0 || group > 1 || state < 0 || state > 3) return;
     if (tl_circles[0][0] == NULL) return;
     tl_state[group] = state;
     for (int i = 0; i < 3; i++) {

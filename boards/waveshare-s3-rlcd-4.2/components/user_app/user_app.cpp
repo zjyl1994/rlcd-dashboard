@@ -1292,6 +1292,8 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
     memset(out_message, 0, sizeof(*out_message));
     out_message->timeout_seconds = MQTT_MESSAGE_TIMEOUT_MS / 1000;
     out_message->beep_type = AUDIO_BEEP_TYPE_NONE;
+    out_message->agent1 = -1;
+    out_message->agent2 = -1;
 
     root = cJSON_Parse(payload);
     if (root == NULL || !cJSON_IsObject(root)) {
@@ -1370,11 +1372,11 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
     }
 
     cJSON *agent1_item = cJSON_GetObjectItem(root, "agent1");
-    if (agent1_item != NULL && cJSON_IsNumber(agent1_item) && agent1_item->valueint >= 1 && agent1_item->valueint <= 3) {
+    if (agent1_item != NULL && cJSON_IsNumber(agent1_item) && agent1_item->valueint >= 0 && agent1_item->valueint <= 3) {
         out_message->agent1 = agent1_item->valueint;
     }
     cJSON *agent2_item = cJSON_GetObjectItem(root, "agent2");
-    if (agent2_item != NULL && cJSON_IsNumber(agent2_item) && agent2_item->valueint >= 1 && agent2_item->valueint <= 3) {
+    if (agent2_item != NULL && cJSON_IsNumber(agent2_item) && agent2_item->valueint >= 0 && agent2_item->valueint <= 3) {
         out_message->agent2 = agent2_item->valueint;
     }
 
@@ -1412,7 +1414,7 @@ static void mqtt_handle_received_message(const char *payload)
     if (Lvgl_lock(-1)) {
         int agents[2] = {message.agent1, message.agent2};
         for (int g = 0; g < 2; g++) {
-            if (agents[g] >= 1 && agents[g] <= 3) {
+            if (agents[g] >= 0 && agents[g] <= 3) {
                 dashboard_ui_update_traffic_light(g, agents[g]);
             }
         }
