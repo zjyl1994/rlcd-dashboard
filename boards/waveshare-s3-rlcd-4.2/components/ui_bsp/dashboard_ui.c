@@ -58,9 +58,9 @@
 #define BATTERY_FILL_H 8
 #define BATTERY_FILL_MAX_W 12
 /* KV display in top-right below icons */
-#define KV_LABEL_X (STATUS_X + 14)
+#define KV_LABEL_X (STATUS_X + 8)
 #define KV_LABEL_Y 30
-#define KV_LABEL_W (STATUS_W - 28)
+#define KV_LABEL_W (STATUS_W - 16)
 #define KV_LABEL_H (H_SPLIT_Y - KV_LABEL_Y - 2)
 #define KV_PAGE_INTERVAL_MS 10000
 #define KV_MAX_LINES 48
@@ -71,8 +71,7 @@
 #define MSG_Y (H_SPLIT_Y + 6)
 #define MSG_W (SCREEN_WIDTH - 16)
 #define MSG_H (SCREEN_HEIGHT - H_SPLIT_Y - 10)
-#define MSG_TITLE_Y (H_SPLIT_Y + 4)
-#define MSG_CONTENT_Y (H_SPLIT_Y + 32)
+#define MSG_CONTENT_Y (H_SPLIT_Y + 6)
 #define MSG_FONT_SIZE 24
 
 /* provisioning (same as before) */
@@ -87,7 +86,6 @@ static lv_obj_t *temp_humi_label;
 static lv_obj_t *wifi_bars[4];
 static lv_obj_t *wifi_mqtt_badge;
 static lv_obj_t *battery_fill;
-static lv_obj_t *msg_title_label;
 static lv_obj_t *msg_content_label;
 static lv_obj_t *status_label;
 static lv_obj_t *prov_title_label;
@@ -283,14 +281,13 @@ void dashboard_ui_init(void)
     battery_fill = create_box(main_view, BATTERY_FILL_X, BATTERY_FILL_Y, 0, BATTERY_FILL_H, false);
 
     kv_label = create_label(main_view, KV_LABEL_X, KV_LABEL_Y, KV_LABEL_W, LV_TEXT_ALIGN_CENTER, font_msg);
-    lv_obj_set_style_text_line_space(kv_label, 6, 0);
     lv_obj_set_height(kv_label, KV_LABEL_H);
     lv_label_set_long_mode(kv_label, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_line_space(kv_label, 6, 0);
 
     /* ---- bottom: message ---- */
-    msg_title_label = create_label(main_view, MSG_X, MSG_TITLE_Y, MSG_W, LV_TEXT_ALIGN_CENTER, font_msg);
-    msg_content_label = create_label(main_view, MSG_X, MSG_CONTENT_Y, MSG_W, LV_TEXT_ALIGN_LEFT, font_msg);
-    lv_obj_set_height(msg_content_label, MSG_H - 30);
+    msg_content_label = create_label(main_view, MSG_X, MSG_CONTENT_Y, MSG_W, LV_TEXT_ALIGN_CENTER, font_msg);
+    lv_obj_set_height(msg_content_label, MSG_H);
     lv_label_set_long_mode(msg_content_label, LV_LABEL_LONG_WRAP);
 
     /* ---- status + provisioning ---- */
@@ -305,6 +302,8 @@ void dashboard_ui_init(void)
     lv_label_set_text(status_label, "Booting...");
     lv_label_set_text(prov_title_label, "Provisioning Mode");
     lv_label_set_text(prov_hint_label, "Open 192.168.4.1 in browser\nAdd Wi-Fi credentials\nHold BOOT to exit.");
+
+    lv_label_set_text(msg_content_label, "Waiting for message...");
 
     dashboard_ui_update_battery(0);
     dashboard_ui_update_wifi_status(false, NULL, 0);
@@ -340,14 +339,23 @@ void dashboard_ui_update_date(int year, int month, int day, int week)
 
 void dashboard_ui_show_message(const char *title, const char *content)
 {
-    if (msg_title_label == NULL || msg_content_label == NULL) return;
-    lv_label_set_text(msg_title_label, (title != NULL) ? title : "");
-    lv_label_set_text(msg_content_label, (content != NULL) ? content : "");
+    LV_UNUSED(title);
+    if (msg_content_label == NULL) return;
+    const char *text = (content != NULL && content[0] != '\0') ? content : "Waiting for message...";
+    lv_label_set_text(msg_content_label, text);
+    lv_point_t sz = {0, 0};
+    lv_text_get_size(&sz, text, font_msg, 0, 0, MSG_W, LV_TEXT_FLAG_NONE);
+    int32_t pad = (MSG_H - sz.y) / 2;
+    if (pad < 0) pad = 0;
+    lv_obj_set_style_pad_top(msg_content_label, pad, 0);
 }
 
 static void kv_show_page(int page)
 {
-    if (kv_label == NULL || kv_line_count == 0) return;
+    if (kv_label == NULL || kv_line_count == 0) {
+        if (kv_label) lv_label_set_text(kv_label, "");
+        return;
+    }
     if (page < 0 || page >= kv_page_count) {
         lv_label_set_text(kv_label, "");
         return;
@@ -355,14 +363,14 @@ static void kv_show_page(int page)
     int start = page * kv_lines_per_page;
     int end = start + kv_lines_per_page;
     if (end > kv_line_count) end = kv_line_count;
-    size_t offset = 0;
-    char buf[512];
-    for (int i = start; i < end && offset < sizeof(buf) - 1; i++) {
-        int n = snprintf(buf + offset, sizeof(buf) - offset, "%s\n", kv_lines[i]);
-        if (n > 0) offset += n;
-        if (offset >= sizeof(buf) - 1) break;
+    char buf[512] = {0};
+    size_t pos = 0;
+    for (int i = start; i < end; i++) {
+        if (pos > 0 && pos < sizeof(buf) - 1) buf[pos++] = '\n';
+        int n = snprintf(buf + pos, sizeof(buf) - pos, "%s", kv_lines[i]);
+        if (n > 0) pos += n;
+        if (pos >= sizeof(buf) - 1) break;
     }
-    if (offset > 0 && buf[offset - 1] == '\n') buf[offset - 1] = '\0';
     lv_label_set_text(kv_label, buf);
 }
 
@@ -378,9 +386,7 @@ void dashboard_ui_update_kv(const char *kv_text)
 {
     if (kv_label == NULL) return;
 
-    if (kv_timer != NULL) {
-        lv_timer_pause(kv_timer);
-    }
+    if (kv_timer != NULL) lv_timer_pause(kv_timer);
     kv_line_count = 0;
     kv_page_count = 0;
     kv_current_page = 0;

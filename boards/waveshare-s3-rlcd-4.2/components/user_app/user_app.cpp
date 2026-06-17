@@ -65,7 +65,6 @@ static constexpr uint16_t WIFI_LISTEN_INTERVAL_BEACONS = 20;
 static constexpr int STATUS_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MESSAGE_MAX_LEN = 512;
-static constexpr int MQTT_MESSAGE_TITLE_MAX_LEN = 64;
 static constexpr int MQTT_KEEPALIVE_SECONDS = 120;
 static constexpr int MQTT_RECONNECT_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MAINT_CONNECTED_PERIOD_MS = 5000;
@@ -174,11 +173,10 @@ typedef struct {
 } legacy_device_config_v1_t;
 
 typedef struct {
-    int type;
     int timeout_seconds;
     int beep_type;
-    char title[MQTT_MESSAGE_TITLE_MAX_LEN + 1];
     char content[MQTT_MESSAGE_MAX_LEN + 1];
+    char kv_data[MQTT_MESSAGE_MAX_LEN + 1];
 } mqtt_overlay_message_t;
 
 static I2cMasterBus *i2cbus = NULL;
@@ -1078,6 +1076,56 @@ static void audio_request_notification_beep(int beep_type)
     }
 }
 
+static const char *UI_CACHE_NS = "ui_cache";
+
+static void ui_cache_save_kv(const char *kv)
+{
+    nvs_handle_t h;
+    if (nvs_open(UI_CACHE_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    if (kv != NULL && kv[0] != '\0') {
+        nvs_set_str(h, "kv_data", kv);
+    } else {
+        nvs_erase_key(h, "kv_data");
+    }
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void ui_cache_save_msg(const char *msg)
+{
+    nvs_handle_t h;
+    if (nvs_open(UI_CACHE_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    if (msg != NULL && msg[0] != '\0') {
+        nvs_set_str(h, "msg_data", msg);
+    } else {
+        nvs_erase_key(h, "msg_data");
+    }
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void ui_cache_restore(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(UI_CACHE_NS, NVS_READONLY, &h) != ESP_OK) return;
+    size_t len;
+    char buf[MQTT_MESSAGE_MAX_LEN + 1];
+    if (nvs_get_str(h, "kv_data", NULL, &len) == ESP_OK && len > 1 && len <= sizeof(buf)) {
+        if (nvs_get_str(h, "kv_data", buf, &len) == ESP_OK) {
+            dashboard_ui_update_kv(buf);
+        }
+    }
+    if (nvs_get_str(h, "msg_data", NULL, &len) == ESP_OK && len > 1 && len <= sizeof(buf)) {
+        if (nvs_get_str(h, "msg_data", buf, &len) == ESP_OK) {
+            mqtt_overlay_message_t m = {};
+            strlcpy(m.content, buf, sizeof(m.content));
+            cache_last_message(&m);
+            dashboard_ui_show_message(NULL, buf);
+        }
+    }
+    nvs_close(h);
+}
+
 static void cache_last_message(const mqtt_overlay_message_t *message)
 {
     if (message == NULL) {
@@ -1111,21 +1159,13 @@ static bool snapshot_last_message(mqtt_overlay_message_t *message)
 static void recall_last_message_fullscreen(void)
 {
     mqtt_overlay_message_t message = {};
-    char fallback_title[32];
-    const char *title;
 
     if (!snapshot_last_message(&message)) {
         ui_set_status_message("No cached message");
         return;
     }
 
-    title = message.title;
-    if (title[0] == '\0') {
-        snprintf(fallback_title, sizeof(fallback_title), "Last Msg T%d", message.type);
-        title = fallback_title;
-    }
-
-    ui_show_message(title, message.content, 0);
+    ui_show_message(NULL, message.content, 0);
 }
 
 static void manual_network_sync_task(void *arg)
@@ -1228,9 +1268,8 @@ static void handle_short_boot_press(void)
 static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message_t *out_message)
 {
     cJSON *root;
-    cJSON *type_item;
-    cJSON *title_item;
-    cJSON *content_item;
+    cJSON *msg_item;
+    cJSON *kv_item;
     cJSON *timeout_item;
     cJSON *beep_item;
 
@@ -1239,7 +1278,6 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
     }
 
     memset(out_message, 0, sizeof(*out_message));
-    out_message->type = -1;
     out_message->timeout_seconds = MQTT_MESSAGE_TIMEOUT_MS / 1000;
     out_message->beep_type = AUDIO_BEEP_TYPE_NONE;
 
@@ -1249,26 +1287,51 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
         return false;
     }
 
-    type_item = cJSON_GetObjectItemCaseSensitive(root, "type");
-    content_item = cJSON_GetObjectItemCaseSensitive(root, "content");
-    title_item = cJSON_GetObjectItemCaseSensitive(root, "title");
+    msg_item = cJSON_GetObjectItemCaseSensitive(root, "message");
+    kv_item = cJSON_GetObjectItemCaseSensitive(root, "kv");
     timeout_item = cJSON_GetObjectItemCaseSensitive(root, "timeout");
     beep_item = cJSON_GetObjectItemCaseSensitive(root, "beep");
 
-    if (!cJSON_IsNumber(type_item) || !cJSON_IsString(content_item) || content_item->valuestring == NULL) {
-        cJSON_Delete(root);
-        return false;
+    if (msg_item != NULL && cJSON_IsString(msg_item) && msg_item->valuestring != NULL) {
+        strlcpy(out_message->content, msg_item->valuestring, sizeof(out_message->content));
     }
 
-    out_message->type = type_item->valueint;
-    strlcpy(out_message->content, content_item->valuestring, sizeof(out_message->content));
-
-    if (title_item != NULL) {
-        if (!cJSON_IsString(title_item) || title_item->valuestring == NULL) {
-            cJSON_Delete(root);
-            return false;
+    if (kv_item != NULL && cJSON_IsObject(kv_item)) {
+        size_t offset = 0;
+        cJSON *child = NULL;
+        cJSON_ArrayForEach(child, kv_item) {
+            if (offset >= sizeof(out_message->kv_data) - 2) break;
+            int n = snprintf(out_message->kv_data + offset, sizeof(out_message->kv_data) - offset,
+                "%s", child->string);
+            if (n < 0) break;
+            offset += n;
+            if (offset >= sizeof(out_message->kv_data) - 2) break;
+            const char *val = NULL;
+            char num_buf[32];
+            if (cJSON_IsString(child) && child->valuestring != NULL) {
+                val = child->valuestring;
+            } else if (cJSON_IsNumber(child)) {
+                if (child->valuedouble == (double)child->valueint) {
+                    snprintf(num_buf, sizeof(num_buf), "%d", child->valueint);
+                } else {
+                    snprintf(num_buf, sizeof(num_buf), "%.1f", child->valuedouble);
+                }
+                val = num_buf;
+            }
+            if (val != NULL) {
+                n = snprintf(out_message->kv_data + offset, sizeof(out_message->kv_data) - offset,
+                    ": %s\n", val);
+                if (n > 0) offset += n;
+            } else {
+                if (offset + 2 <= sizeof(out_message->kv_data)) {
+                    memcpy(out_message->kv_data + offset, "\n", 2);
+                    offset += 1;
+                }
+            }
         }
-        strlcpy(out_message->title, title_item->valuestring, sizeof(out_message->title));
+        if (offset > 0 && out_message->kv_data[offset - 1] == '\n') {
+            out_message->kv_data[offset - 1] = '\0';
+        }
     }
 
     if (timeout_item != NULL) {
@@ -1308,21 +1371,22 @@ static void mqtt_handle_received_message(const char *payload)
         return;
     }
 
-    if (message.type == 4) {
+    if (message.kv_data[0] != '\0') {
         if (Lvgl_lock(-1)) {
-            dashboard_ui_update_kv(message.content);
+            dashboard_ui_update_kv(message.kv_data);
             Lvgl_unlock();
         }
-        return;
+        ui_cache_save_kv(message.kv_data);
     }
 
-    cache_last_message(&message);
-
-    if (message.beep_type != AUDIO_BEEP_TYPE_NONE) {
-        audio_request_notification_beep(message.beep_type);
+    if (message.content[0] != '\0') {
+        cache_last_message(&message);
+        if (message.beep_type != AUDIO_BEEP_TYPE_NONE) {
+            audio_request_notification_beep(message.beep_type);
+        }
+        ui_show_message(NULL, message.content, message.timeout_seconds);
+        ui_cache_save_msg(message.content);
     }
-
-    ui_show_message(message.title, message.content, message.timeout_seconds);
 }
 
 static void html_escape(const char *src, char *dst, size_t dst_size)
@@ -3278,6 +3342,7 @@ void UserApp_AppInit(void)
 void UserApp_UiInit(void)
 {
     dashboard_ui_init();
+    ui_cache_restore();
     ui_set_default_status_message_locked();
 }
 
