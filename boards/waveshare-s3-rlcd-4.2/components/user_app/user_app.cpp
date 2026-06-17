@@ -1345,7 +1345,7 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
     }
 
     if (timeout_item != NULL) {
-        if (!cJSON_IsNumber(timeout_item) || timeout_item->valueint < 0) {
+        if (!cJSON_IsNumber(timeout_item) || timeout_item->valueint < 0 || timeout_item->valueint > 180) {
             cJSON_Delete(root);
             return false;
         }
