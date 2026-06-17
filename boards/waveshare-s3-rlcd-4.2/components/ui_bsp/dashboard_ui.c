@@ -111,8 +111,8 @@ static bool mqtt_badge_connected = false;
 static int last_clock_hour = -1;
 static int last_clock_minute = -1;
 
-extern const uint8_t smiley_ttf_start[] asm("_binary_SmileySans_Oblique_ttf_start");
-extern const uint8_t smiley_ttf_end[] asm("_binary_SmileySans_Oblique_ttf_end");
+extern const uint8_t smiley_ttf_start[] asm("_binary_MiSans_Regular_ttf_start");
+extern const uint8_t smiley_ttf_end[] asm("_binary_MiSans_Regular_ttf_end");
 
 static lv_obj_t *create_box(lv_obj_t *parent, int x, int y, int w, int h, bool outlined)
 {
@@ -288,12 +288,12 @@ void dashboard_ui_init(void)
     kv_label = create_label(main_view, KV_LABEL_X, KV_LABEL_Y, KV_LABEL_W, LV_TEXT_ALIGN_CENTER, font_msg);
     lv_obj_set_height(kv_label, KV_LABEL_H);
     lv_label_set_long_mode(kv_label, LV_LABEL_LONG_CLIP);
-    lv_obj_set_style_text_line_space(kv_label, 6, 0);
+    lv_obj_set_style_text_line_space(kv_label, 2, 0);
 
     /* ---- bottom: message ---- */
     msg_content_label = create_label(main_view, MSG_X, MSG_CONTENT_Y, MSG_W, LV_TEXT_ALIGN_CENTER, font_msg);
     lv_obj_set_height(msg_content_label, MSG_H);
-    lv_label_set_long_mode(msg_content_label, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(msg_content_label, LV_LABEL_LONG_CLIP);
 
     /* ---- provisioning ---- */
     prov_title_label = create_label(prov_view, 40, 42, 320, LV_TEXT_ALIGN_CENTER, &lv_font_montserrat_24);
@@ -303,7 +303,7 @@ void dashboard_ui_init(void)
 
     lv_label_set_text(temp_humi_label, "--.- C  --%");
     lv_label_set_text(prov_title_label, "Provisioning Mode");
-    lv_label_set_text(prov_hint_label, "Open 192.168.4.1 in browser\nAdd Wi-Fi credentials\nHold BOOT to exit.");
+    lv_label_set_text(prov_hint_label, "Open 192.168.4.1 in browser\nAdd Wi-Fi credentials\nPress KEY or BOOT to exit.");
 
     lv_label_set_text(msg_content_label, "Waiting for message...");
 
