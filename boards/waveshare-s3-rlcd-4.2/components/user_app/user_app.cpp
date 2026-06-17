@@ -175,6 +175,8 @@ typedef struct {
 typedef struct {
     int timeout_seconds;
     int beep_type;
+    int agent1;
+    int agent2;
     char content[MQTT_MESSAGE_MAX_LEN + 1];
     char kv_data[MQTT_MESSAGE_MAX_LEN + 1];
 } mqtt_overlay_message_t;
@@ -1297,10 +1299,10 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
         return false;
     }
 
-    msg_item = cJSON_GetObjectItemCaseSensitive(root, "message");
-    kv_item = cJSON_GetObjectItemCaseSensitive(root, "kv");
-    timeout_item = cJSON_GetObjectItemCaseSensitive(root, "timeout");
-    beep_item = cJSON_GetObjectItemCaseSensitive(root, "beep");
+    msg_item = cJSON_GetObjectItem(root, "message");
+    kv_item = cJSON_GetObjectItem(root, "kv");
+    timeout_item = cJSON_GetObjectItem(root, "timeout");
+    beep_item = cJSON_GetObjectItem(root, "beep");
 
     if (msg_item != NULL && cJSON_IsString(msg_item) && msg_item->valuestring != NULL) {
         strlcpy(out_message->content, msg_item->valuestring, sizeof(out_message->content));
@@ -1367,6 +1369,15 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
         }
     }
 
+    cJSON *agent1_item = cJSON_GetObjectItem(root, "agent1");
+    if (agent1_item != NULL && cJSON_IsNumber(agent1_item) && agent1_item->valueint >= 1 && agent1_item->valueint <= 3) {
+        out_message->agent1 = agent1_item->valueint;
+    }
+    cJSON *agent2_item = cJSON_GetObjectItem(root, "agent2");
+    if (agent2_item != NULL && cJSON_IsNumber(agent2_item) && agent2_item->valueint >= 1 && agent2_item->valueint <= 3) {
+        out_message->agent2 = agent2_item->valueint;
+    }
+
     cJSON_Delete(root);
     return true;
 }
@@ -1396,6 +1407,16 @@ static void mqtt_handle_received_message(const char *payload)
         }
         ui_show_message(NULL, message.content, message.timeout_seconds);
         ui_cache_save_msg(message.content);
+    }
+
+    if (Lvgl_lock(-1)) {
+        int agents[2] = {message.agent1, message.agent2};
+        for (int g = 0; g < 2; g++) {
+            if (agents[g] >= 1 && agents[g] <= 3) {
+                dashboard_ui_update_traffic_light(g, agents[g]);
+            }
+        }
+        Lvgl_unlock();
     }
 }
 

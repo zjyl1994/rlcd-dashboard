@@ -9,7 +9,7 @@
 #define UI_FG_COLOR lv_color_black()
 #define SCREEN_WIDTH 400
 #define SCREEN_HEIGHT 300
-#define H_SPLIT_Y 134
+#define H_SPLIT_Y 194
 #define V_SPLIT_X 196
 
 /* top-left: clock + date */
@@ -17,10 +17,26 @@
 #define CLOCK_Y 0
 #define CLOCK_W V_SPLIT_X
 #define CLOCK_H H_SPLIT_Y
-#define CLOCK_LABEL_Y 10
-#define DATE_LABEL_Y 100
+#define CLOCK_LABEL_Y 0
+#define DATE_LABEL_Y 78
 #define CLOCK_FONT_SIZE 70
 #define DATE_FONT_SIZE 18
+
+/* divider below date in top-left */
+#define TL_DIVIDER_Y 106
+
+/* vertical traffic lights (2 groups, left=light right=label) */
+#define TL_RADIUS 10
+#define TL_DIAM (TL_RADIUS * 2)
+#define TL_GAP 8
+#define TL_Y 112
+#define TL_LABEL_W 52
+#define TL_CIRCLE_X1 12
+#define TL_LABEL_X1 (TL_CIRCLE_X1 + TL_DIAM + 6)
+#define TL_DIV_V_X 98
+#define TL_CIRCLE_X2 (TL_DIV_V_X + 11)
+#define TL_LABEL_X2 (TL_CIRCLE_X2 + TL_DIAM + 6)
+#define TL_LABEL_Y_OFF ((TL_DIAM - 14) / 2)
 
 /* top-right: status area */
 #define STATUS_X (V_SPLIT_X + 1)
@@ -60,9 +76,9 @@
 #define BATTERY_FILL_MAX_W 12
 /* KV display in top-right below icons */
 #define KV_LABEL_X (STATUS_X + 8)
-#define KV_LABEL_Y 30
+#define KV_LABEL_Y 26
 #define KV_LABEL_W (STATUS_W - 16)
-#define KV_LABEL_H (H_SPLIT_Y - KV_LABEL_Y - 2)
+#define KV_LABEL_H (H_SPLIT_Y - KV_LABEL_Y - 4)
 #define KV_PAGE_INTERVAL_MS 10000
 #define KV_MAX_LINES 48
 #define KV_MAX_LINE_LEN 80
@@ -76,7 +92,7 @@
 #define MSG_FONT_SIZE 24
 #define MSG_PAGE_INTERVAL_MS 10000
 #define MSG_MAX_LINES 40
-#define MSG_LINES_PER_PAGE 5
+#define MSG_LINES_PER_PAGE 3
 
 static lv_obj_t *screen_obj;
 static lv_obj_t *main_view;
@@ -110,6 +126,13 @@ static int kv_current_page = 0;
 static bool mqtt_badge_connected = false;
 static int last_clock_hour = -1;
 static int last_clock_minute = -1;
+static lv_obj_t *tl_circles[2][3];
+static lv_obj_t *tl_labels[2][3];
+static int tl_state[2] = {0, 0};
+static lv_timer_t *tl_blink_timer = NULL;
+static bool tl_blink_on = false;
+
+static void tl_blink_cb(lv_timer_t *t);
 
 extern const uint8_t smiley_ttf_start[] asm("_binary_MiSans_Regular_ttf_start");
 extern const uint8_t smiley_ttf_end[] asm("_binary_MiSans_Regular_ttf_end");
@@ -264,6 +287,28 @@ void dashboard_ui_init(void)
     date_label = create_label(main_view, 0, DATE_LABEL_Y, CLOCK_W, LV_TEXT_ALIGN_CENTER, font_date);
     lv_label_set_text(clock_label, "--:--");
     lv_label_set_text(date_label, "----.--.--");
+
+    /* divider below date in top-left quadrant */
+    create_divider_h(main_view, 0, TL_DIVIDER_Y, V_SPLIT_X);
+
+    /* ---- vertical traffic lights (2 groups) ---- */
+    static const char *tl_label_text[3] = {"READY", "WORK", "ERROR"};
+    int tl_cx[2] = {TL_CIRCLE_X1, TL_CIRCLE_X2};
+    int tl_lx[2] = {TL_LABEL_X1, TL_LABEL_X2};
+    for (int g = 0; g < 2; g++) {
+        for (int i = 0; i < 3; i++) {
+            int y = TL_Y + i * (TL_DIAM + TL_GAP);
+            tl_circles[g][i] = create_box(main_view, tl_cx[g], y, TL_DIAM, TL_DIAM, true);
+            lv_obj_set_style_radius(tl_circles[g][i], LV_RADIUS_CIRCLE, 0);
+            set_box_filled(tl_circles[g][i], false);
+            tl_labels[g][i] = create_label(main_view, tl_lx[g], y + TL_LABEL_Y_OFF, TL_LABEL_W, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
+            lv_obj_set_height(tl_labels[g][i], 14);
+            lv_label_set_text(tl_labels[g][i], tl_label_text[i]);
+        }
+    }
+    int tl_div_h = TL_DIAM * 3 + TL_GAP * 2;
+    create_divider_v(main_view, TL_DIV_V_X, TL_Y, tl_div_h);
+    tl_blink_timer = lv_timer_create(tl_blink_cb, 500, NULL);
 
     /* ---- top-right: status ---- */
     temp_humi_label = create_label(main_view, TEMP_LABEL_X, TOP_ROW_Y, TEMP_LABEL_W, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
@@ -475,7 +520,7 @@ void dashboard_ui_update_kv(const char *kv_text)
     }
 
     if (kv_line_count > 0) {
-        kv_lines_per_page = 3;
+        kv_lines_per_page = 5;
         kv_page_count = (kv_line_count + kv_lines_per_page - 1) / kv_lines_per_page;
         kv_show_page(0);
         if (kv_page_count > 1) {
@@ -523,6 +568,27 @@ void dashboard_ui_update_battery(int level)
 void dashboard_ui_update_mqtt_status(bool connected)
 {
     set_mqtt_level(connected);
+}
+
+static void tl_blink_cb(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    tl_blink_on = !tl_blink_on;
+    for (int g = 0; g < 2; g++) {
+        if (tl_state[g] == 2) {
+            set_box_filled(tl_circles[g][1], tl_blink_on);
+        }
+    }
+}
+
+void dashboard_ui_update_traffic_light(int group, int state)
+{
+    if (group < 0 || group > 1 || state < 1 || state > 3) return;
+    if (tl_circles[0][0] == NULL) return;
+    tl_state[group] = state;
+    for (int i = 0; i < 3; i++) {
+        set_box_filled(tl_circles[group][i], i == (state - 1));
+    }
 }
 
 void dashboard_ui_set_provisioning(bool active, const char *ap_ssid, const char *ap_ip)
