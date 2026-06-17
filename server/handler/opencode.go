@@ -11,24 +11,19 @@ import (
 )
 
 const (
-	maxTitleLen    = 64
-	maxContentLen  = 512
-	maxMessageType = 3
-	maxBeepType    = 6
+	maxContentLen = 512
+	maxTimeout    = 180
+	maxBeepType   = 6
 )
 
 type NotifyOpencodeRequest struct {
-	Title   string `json:"title" binding:"required"`
 	Content string `json:"content" binding:"required"`
-	Type    *int   `json:"type"`
 	Beep    *int   `json:"beep"`
 	Timeout *int   `json:"timeout"`
 }
 
 type NotifyMessage struct {
-	Type    int    `json:"type"`
-	Title   string `json:"title"`
-	Content string `json:"content"`
+	Message string `json:"message"`
 	Beep    int    `json:"beep"`
 	Timeout int    `json:"timeout"`
 }
@@ -55,21 +50,8 @@ func NotifyOpencodeHandler(c *gin.Context) {
 		return
 	}
 
-	if len(req.Title) > maxTitleLen {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("title too long (max %d bytes)", maxTitleLen)})
-		return
-	}
 	if len(req.Content) > maxContentLen {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("content too long (max %d bytes)", maxContentLen)})
-		return
-	}
-
-	msgType := 1
-	if req.Type != nil {
-		msgType = *req.Type
-	}
-	if msgType < 1 || msgType > maxMessageType {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("type must be 1-%d", maxMessageType)})
 		return
 	}
 
@@ -85,15 +67,13 @@ func NotifyOpencodeHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("beep must be 0-%d", maxBeepType)})
 		return
 	}
-	if timeout < 0 || timeout > 60 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "timeout must be 0-60"})
+	if timeout < 0 || timeout > maxTimeout {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("timeout must be 0-%d", maxTimeout)})
 		return
 	}
 
 	msg := NotifyMessage{
-		Type:    msgType,
-		Title:   req.Title,
-		Content: req.Content,
+		Message: req.Content,
 		Beep:    beep,
 		Timeout: timeout,
 	}
