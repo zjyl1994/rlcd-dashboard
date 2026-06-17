@@ -73,6 +73,9 @@
 #define MSG_H (SCREEN_HEIGHT - H_SPLIT_Y - 10)
 #define MSG_CONTENT_Y (H_SPLIT_Y + 6)
 #define MSG_FONT_SIZE 24
+#define MSG_PAGE_INTERVAL_MS 10000
+#define MSG_MAX_LINES 40
+#define MSG_LINES_PER_PAGE 5
 
 static lv_obj_t *screen_obj;
 static lv_obj_t *main_view;
@@ -84,6 +87,11 @@ static lv_obj_t *wifi_bars[4];
 static lv_obj_t *wifi_mqtt_badge;
 static lv_obj_t *battery_fill;
 static lv_obj_t *msg_content_label;
+static lv_timer_t *msg_timer = NULL;
+static char msg_lines[MSG_MAX_LINES][128];
+static int msg_line_count = 0;
+static int msg_page_count = 0;
+static int msg_current_page = 0;
 static lv_obj_t *prov_title_label;
 static lv_obj_t *prov_ssid_label;
 static lv_obj_t *prov_ip_label;
@@ -330,17 +338,80 @@ void dashboard_ui_update_date(int year, int month, int day, int week)
     lv_label_set_text(date_label, buf);
 }
 
+static void msg_show_page(int page)
+{
+    if (msg_content_label == NULL || msg_line_count == 0) return;
+    if (page < 0 || page >= msg_page_count) {
+        lv_label_set_text(msg_content_label, "");
+        return;
+    }
+    int start = page * MSG_LINES_PER_PAGE;
+    int end = start + MSG_LINES_PER_PAGE;
+    if (end > msg_line_count) end = msg_line_count;
+    static char buf[640];
+    size_t pos = 0;
+    for (int i = start; i < end; i++) {
+        if (pos > 0 && pos < sizeof(buf) - 1) buf[pos++] = '\n';
+        int n = snprintf(buf + pos, sizeof(buf) - pos, "%s", msg_lines[i]);
+        if (n > 0) pos += n;
+        if (pos >= sizeof(buf) - 1) break;
+    }
+    buf[pos] = '\0';
+    lv_label_set_text(msg_content_label, buf);
+    lv_point_t sz = {0, 0};
+    lv_text_get_size(&sz, buf, font_msg, 0, 0, MSG_W, LV_TEXT_FLAG_NONE);
+    int32_t pad = (MSG_H - sz.y) / 2;
+    if (pad < 0) pad = 0;
+    lv_obj_set_style_pad_top(msg_content_label, pad, 0);
+}
+
+static void msg_timer_cb(lv_timer_t *timer)
+{
+    LV_UNUSED(timer);
+    if (msg_page_count <= 1) return;
+    msg_current_page = (msg_current_page + 1) % msg_page_count;
+    msg_show_page(msg_current_page);
+}
+
 void dashboard_ui_show_message(const char *title, const char *content)
 {
     LV_UNUSED(title);
     if (msg_content_label == NULL) return;
-    const char *text = (content != NULL && content[0] != '\0') ? content : "Waiting for message...";
-    lv_label_set_text(msg_content_label, text);
-    lv_point_t sz = {0, 0};
-    lv_text_get_size(&sz, text, font_msg, 0, 0, MSG_W, LV_TEXT_FLAG_NONE);
-    int32_t pad = (MSG_H - sz.y) / 2;
-    if (pad < 0) pad = 0;
-    lv_obj_set_style_pad_top(msg_content_label, pad, 0);
+    if (msg_timer != NULL) lv_timer_pause(msg_timer);
+    msg_line_count = 0;
+    msg_page_count = 0;
+    msg_current_page = 0;
+    const char *text = (content != NULL && content[0] != '\0') ? content : "";
+    const char *p = text;
+    while (*p != '\0' && msg_line_count < MSG_MAX_LINES) {
+        const char *nl = strchr(p, '\n');
+        int len = (nl != NULL) ? (int)(nl - p) : (int)strlen(p);
+        if (len > 127) len = 127;
+        memcpy(msg_lines[msg_line_count], p, len);
+        msg_lines[msg_line_count][len] = '\0';
+        msg_line_count++;
+        if (nl != NULL) p = nl + 1;
+        else break;
+    }
+    if (msg_line_count > 0) {
+        msg_page_count = (msg_line_count + MSG_LINES_PER_PAGE - 1) / MSG_LINES_PER_PAGE;
+        msg_show_page(0);
+        if (msg_page_count > 1) {
+            if (msg_timer == NULL) {
+                msg_timer = lv_timer_create(msg_timer_cb, MSG_PAGE_INTERVAL_MS, NULL);
+            } else {
+                lv_timer_reset(msg_timer);
+            }
+            lv_timer_resume(msg_timer);
+        }
+    } else {
+        lv_label_set_text(msg_content_label, "Waiting for message...");
+        lv_point_t sz = {0, 0};
+        lv_text_get_size(&sz, "Waiting for message...", font_msg, 0, 0, MSG_W, LV_TEXT_FLAG_NONE);
+        int32_t pad = (MSG_H - sz.y) / 2;
+        if (pad < 0) pad = 0;
+        lv_obj_set_style_pad_top(msg_content_label, pad, 0);
+    }
 }
 
 static void kv_show_page(int page)
