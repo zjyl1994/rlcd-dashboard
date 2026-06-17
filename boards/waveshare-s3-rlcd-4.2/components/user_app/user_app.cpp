@@ -2690,7 +2690,7 @@ static bool schedule_provisioning_action(bool enter, bool reconnect_saved)
 
 static void ntp_sync_once(void)
 {
-    ui_set_status_message("Syncing time\nfrom ntp.aliyun.com");
+    ui_set_status_message("Syncing time from\nntp.aliyun.com");
 
     esp_sntp_stop();
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);

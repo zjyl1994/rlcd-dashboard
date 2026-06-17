@@ -18,8 +18,8 @@
 #define CLOCK_W V_SPLIT_X
 #define CLOCK_H H_SPLIT_Y
 #define CLOCK_LABEL_Y 10
-#define DATE_LABEL_Y 96
-#define CLOCK_FONT_SIZE 72
+#define DATE_LABEL_Y 100
+#define CLOCK_FONT_SIZE 70
 #define DATE_FONT_SIZE 18
 
 /* top-right: status area */
@@ -301,7 +301,7 @@ void dashboard_ui_init(void)
     prov_ip_label = create_label(prov_view, 24, 138, 352, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
     prov_hint_label = create_label(prov_view, 24, 188, 352, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
 
-    lv_label_set_text(temp_humi_label, "--.- C  --%");
+    lv_label_set_text(temp_humi_label, "--.- °C  -- %");
     lv_label_set_text(prov_title_label, "Provisioning Mode");
     lv_label_set_text(prov_hint_label, "Open 192.168.4.1 in browser\nAdd Wi-Fi credentials\nPress KEY or BOOT to exit.");
 
@@ -495,7 +495,7 @@ void dashboard_ui_update_temp_humi(float temp, float humi)
 {
     if (temp_humi_label == NULL) return;
     char buf[32];
-    snprintf(buf, sizeof(buf), "%2.1f C  %2.0f%%", temp, humi);
+    snprintf(buf, sizeof(buf), "%2.1f °C  %2.0f %%", temp, humi);
     lv_label_set_text(temp_humi_label, buf);
 }
 
