@@ -3,174 +3,97 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"strings"
 
-	"github.com/gin-gonic/gin"
 	"github.com/zjyl1994/rlcd-dashboard/server/vars"
 )
 
+type AgentStatus int
+
 const (
-	maxContentLen = 512
-	maxTimeout    = 180
-	maxBeepType   = 6
+	StatusUndefined       AgentStatus = iota
+	StatusSuccess         AgentStatus = iota
+	StatusWorking         AgentStatus = iota
+	StatusError           AgentStatus = iota
+	StatusWaitingApproval AgentStatus = iota
 )
 
-type NotifyOpencodeRequest struct {
-	Content string `json:"content" binding:"required"`
-	Beep    *int   `json:"beep"`
-	Timeout *int   `json:"timeout"`
+var statusNames = map[AgentStatus]string{
+	StatusSuccess:         "success",
+	StatusWorking:         "working",
+	StatusError:           "error",
+	StatusWaitingApproval: "waiting_approval",
 }
 
-type NotifyMessage struct {
-	Message string `json:"message"`
-	Beep    int    `json:"beep"`
+func ParseAgentStatus(s string) (AgentStatus, error) {
+	for k, v := range statusNames {
+		if v == s {
+			return k, nil
+		}
+	}
+	return StatusUndefined, fmt.Errorf("unknown agent status: %s", s)
+}
+
+type mqttPayload struct {
+	Message string `json:"message,omitempty"`
+	Beep    int    `json:"beep,omitempty"`
 	Timeout int    `json:"timeout"`
+	Agent1  *int   `json:"agent1,omitempty"`
+	Agent2  *int   `json:"agent2,omitempty"`
 }
 
-func NotifyHandler(c *gin.Context) {
-	name := strings.TrimSpace(c.Query("name"))
-	if name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
-		return
-	}
-	if err := validateTopicName(name); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	var req NotifyOpencodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
+func ReportAgentStatus(agentName string, status AgentStatus, message string) error {
 	if vars.Mqtt == nil || !vars.Mqtt.IsConnected() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "mqtt not connected"})
-		return
+		return fmt.Errorf("mqtt not connected")
 	}
 
-	if len(req.Content) > maxContentLen {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("content too long (max %d bytes)", maxContentLen)})
-		return
+	if vars.Config.Mqtt.Topic == "" {
+		return fmt.Errorf("mqtt topic not configured")
 	}
 
-	beep := 0
-	timeout := 15
-	if req.Beep != nil {
-		beep = *req.Beep
-	}
-	if req.Timeout != nil {
-		timeout = *req.Timeout
-	}
-	if beep < 0 || beep > maxBeepType {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("beep must be 0-%d", maxBeepType)})
-		return
-	}
-	if timeout < 0 || timeout > maxTimeout {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("timeout must be 0-%d", maxTimeout)})
-		return
+	var beep int
+	var val int
+	var timeout int
+
+	switch status {
+	case StatusSuccess:
+		val = 1
+		beep = 1
+		timeout = 15
+	case StatusWorking:
+		val = 2
+		beep = 0
+		timeout = 30
+	case StatusError:
+		val = 3
+		beep = 2
+		timeout = 30
+	case StatusWaitingApproval:
+		val = 3
+		beep = 3
+		timeout = 60
+	default:
+		return fmt.Errorf("unknown agent status: %d", status)
 	}
 
-	msg := NotifyMessage{
-		Message: req.Content,
+	payload := mqttPayload{
+		Message: message,
 		Beep:    beep,
 		Timeout: timeout,
 	}
 
-	payload, err := json.Marshal(msg)
+	switch agentName {
+	case "agent1":
+		payload.Agent1 = &val
+	case "agent2":
+		payload.Agent2 = &val
+	}
+
+	data, err := json.Marshal(payload)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return fmt.Errorf("marshal error: %w", err)
 	}
 
-	topic := fmt.Sprintf("/rlcd/%s/message", name)
-	token := vars.Mqtt.Publish(topic, 0, false, payload)
+	token := vars.Mqtt.Publish(vars.Config.Mqtt.Topic, 0, false, data)
 	token.Wait()
-	if err := token.Error(); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"ok": true})
-}
-
-func validateTopicName(name string) error {
-	if strings.ContainsAny(name, "\x00#+") {
-		return fmt.Errorf("name contains invalid characters")
-	}
-	if strings.ContainsRune(name, '/') {
-		return fmt.Errorf("name must not contain '/'")
-	}
-	return nil
-}
-
-type TrafficOpencodeRequest struct {
-	Agent1 *int `json:"agent1"`
-	Agent2 *int `json:"agent2"`
-}
-
-type TrafficMessage struct {
-	Agent1 *int `json:"agent1,omitempty"`
-	Agent2 *int `json:"agent2,omitempty"`
-}
-
-func TrafficHandler(c *gin.Context) {
-	name := strings.TrimSpace(c.Query("name"))
-	if name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
-		return
-	}
-	if err := validateTopicName(name); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	var req TrafficOpencodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	if req.Agent1 == nil && req.Agent2 == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one of agent1/agent2 is required"})
-		return
-	}
-
-	if vars.Mqtt == nil || !vars.Mqtt.IsConnected() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "mqtt not connected"})
-		return
-	}
-
-	msg := TrafficMessage{}
-	if req.Agent1 != nil {
-		if *req.Agent1 < 0 || *req.Agent1 > 3 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "agent1 must be 0-3"})
-			return
-		}
-		msg.Agent1 = req.Agent1
-	}
-	if req.Agent2 != nil {
-		if *req.Agent2 < 0 || *req.Agent2 > 3 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "agent2 must be 0-3"})
-			return
-		}
-		msg.Agent2 = req.Agent2
-	}
-
-	payload, err := json.Marshal(msg)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	topic := fmt.Sprintf("/rlcd/%s/message", name)
-	token := vars.Mqtt.Publish(topic, 0, false, payload)
-	token.Wait()
-	if err := token.Error(); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	return token.Error()
 }

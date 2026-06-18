@@ -12,4 +12,5 @@ type MqttS struct {
 	TLS      bool   `json:"tls"`
 	Username string `json:"username"`
 	Password string `json:"password"`
+	Topic    string `json:"topic"`
 }

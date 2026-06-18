@@ -5,6 +5,7 @@
         "port": 1883,
         "tls": false,
         "username": "",
-        "password": ""
+        "password": "",
+        "topic": "/rlcd/{device_name}/message"
     }
 }
