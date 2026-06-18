@@ -1,28 +1,28 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
-const WEBHOOK_URL = "https://example.com/api/opencode/notify?name=YOU_RLCD_DEVICE_NAME"
+const API_BASE = "http://localhost:7523"
+const AGENT_NAME = "agent1"
 
-async function notify(
-  title: string,
-  content: string,
-  beep: 1 | 2 | 3,
+type Status = "success" | "working" | "error" | "waiting_approval"
+
+async function report(
+  status: Status,
+  message: string,
 ) {
   try {
-    await fetch(WEBHOOK_URL, {
+    await fetch(`${API_BASE}/api/opencode/report`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        type: 1,
-        title,
-        content,
-        beep,
-        timeout: 30,
+        agent_name: AGENT_NAME,
+        status,
+        message,
       }),
     })
   } catch (e) {
-    console.error("[webhook] failed", e)
+    console.error("[report] failed", e)
   }
 }
 
@@ -37,75 +37,50 @@ function toText(v: any) {
 }
 
 export const MyPlugin: Plugin = async () => {
-  console.log("[webhook] loaded")
+  console.log("[report] loaded")
+  await report("success", "Agent就绪")
 
   return {
     event: async ({ event }) => {
       const type = event?.type
 
-      // =========================
-      // 1. 完成
-      // =========================
-      if (type === "session.idle") {
-        await notify(
-          "任务完成",
-          "Agent已结束并进入空闲状态",
-          1,
-        )
+      if (
+        type === "session.created" ||
+        type === "session.status" ||
+        type === "session.updated" ||
+        type === "session.compacted"
+      ) {
+        await report("working", "Agent工作中...")
         return
       }
 
-      // =========================
-      // 2. 报错
-      // =========================
+      if (type === "session.deleted" || type === "session.idle") {
+        await report("success", "Agent任务完成")
+        return
+      }
+
       if (type === "session.error") {
-        await notify(
-          "任务异常",
-          toText(event),
-          3,
-        )
+        await report("error", toText(event))
         return
       }
 
-      // =========================
-      // 3. 等待权限审批
-      // =========================
-      if (type === "permission.asked") {
-        await notify(
-          "需要人工审批",
-          toText(event),
-          2,
-        )
+      if (type === "permission.asked" || type === "permission.replied") {
+        await report("waiting_approval", "需要人工审批: " + toText(event))
         return
       }
 
-      if (type === "permission.updated") {
-        await notify(
-          "等待用户授权",
-          toText(event),
-          2,
-        )
-        return
-      }
-
-      // =========================
-      // 4. Agent卡住 / 等输入
-      // =========================
       if (type === "tool.execute.before") {
         const tool = event?.tool ?? event?.name
-
-        // question / input / ask 都属于“需要你”
-        if (
-          tool === "question" ||
-          tool === "ask" ||
-          tool === "input"
-        ) {
-          await notify(
-            "Agent等待你的回复",
-            toText(event),
-            2,
-          )
+        if (tool === "question" || tool === "ask" || tool === "input") {
+          await report("waiting_approval", "Agent等待你的回复: " + toText(event))
+        } else {
+          await report("working", "Agent执行: " + tool)
         }
+        return
+      }
+
+      if (type === "tool.execute.after") {
+        await report("working", "Agent思考中...")
         return
       }
     },
