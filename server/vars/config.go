@@ -1,9 +1,14 @@
 package vars
 
 type ConfigS struct {
-	Name   string `json:"name"`
-	Listen string `json:"listen"`
-	Mqtt   MqttS  `json:"mqtt"`
+	Name      string   `json:"name"`
+	Listen    string   `json:"listen"`
+	Mqtt      MqttS    `json:"mqtt"`
+	DeepSeek  DeepSeekS `json:"deepseek"`
+}
+
+type DeepSeekS struct {
+	Key string `json:"key"`
 }
 
 type MqttS struct {

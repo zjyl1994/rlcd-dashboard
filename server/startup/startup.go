@@ -4,13 +4,16 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/gin-gonic/gin"
+	"github.com/zjyl1994/rlcd-dashboard/server/deepseek"
 	"github.com/zjyl1994/rlcd-dashboard/server/handler"
 	"github.com/zjyl1994/rlcd-dashboard/server/vars"
 )
@@ -23,6 +26,8 @@ func Start() error {
 	if err := connectMqtt(); err != nil {
 		return err
 	}
+
+	startBalanceTask()
 
 	router := gin.Default()
 	handler.RegisterRoute(router)
@@ -112,4 +117,26 @@ func connectMqtt() error {
 
 	vars.Mqtt = client
 	return nil
+}
+
+func startBalanceTask() {
+	if vars.Config.DeepSeek.Key == "" {
+		return
+	}
+
+	go func() {
+		// wait for mqtt to be ready
+		time.Sleep(3 * time.Second)
+		if err := deepseek.FetchAndPublish(); err != nil {
+			log.Printf("deepseek balance (initial): %v", err)
+		}
+
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := deepseek.FetchAndPublish(); err != nil {
+				log.Printf("deepseek balance: %v", err)
+			}
+		}
+	}()
 }
