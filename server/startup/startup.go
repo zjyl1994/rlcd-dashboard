@@ -132,50 +132,39 @@ func startCollectTask() {
 	}()
 }
 
-type kvFields struct {
-	Gold     string `json:"黄金,omitempty"`
-	USD      string `json:"美元,omitempty"`
-	HKD      string `json:"港币,omitempty"`
-	DSBalance string `json:"DS余额,omitempty"`
-}
-
 func collectAndPublish() {
-	var kv kvFields
-	hasData := false
+	var lines []string
 
 	if price, err := gold.FetchPrice(); err != nil {
 		log.Printf("gold price: %v", err)
 	} else {
-		kv.Gold = price
-		hasData = true
+		lines = append(lines, "黄金: "+price)
 	}
 
 	if usd, hkd, err := forex.FetchRates(); err != nil {
 		log.Printf("forex: %v", err)
 	} else {
-		kv.USD = usd
-		kv.HKD = hkd
-		hasData = true
+		lines = append(lines, "美元: "+usd)
+		lines = append(lines, "港币: "+hkd)
 	}
 
 	if vars.Config.DeepSeek.Key != "" {
 		if balance, err := deepseek.FetchBalance(); err != nil {
 			log.Printf("deepseek balance: %v", err)
 		} else {
-			kv.DSBalance = balance
-			hasData = true
+			lines = append(lines, "DS余额: "+balance)
 		}
 	}
 
-	if !hasData {
+	if len(lines) == 0 {
 		return
 	}
 
 	payload := struct {
-		KV      kvFields `json:"kv"`
-		Timeout int      `json:"timeout"`
+		Info    string `json:"info"`
+		Timeout int    `json:"timeout"`
 	}{
-		KV:      kv,
+		Info:    strings.Join(lines, "\n"),
 		Timeout: 0,
 	}
 

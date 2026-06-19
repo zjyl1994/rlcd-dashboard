@@ -1281,7 +1281,7 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
 {
     cJSON *root;
     cJSON *msg_item;
-    cJSON *kv_item;
+    cJSON *info_item;
     cJSON *timeout_item;
     cJSON *beep_item;
 
@@ -1302,7 +1302,7 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
     }
 
     msg_item = cJSON_GetObjectItem(root, "message");
-    kv_item = cJSON_GetObjectItem(root, "kv");
+    info_item = cJSON_GetObjectItem(root, "info");
     timeout_item = cJSON_GetObjectItem(root, "timeout");
     beep_item = cJSON_GetObjectItem(root, "beep");
 
@@ -1310,42 +1310,8 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
         strlcpy(out_message->content, msg_item->valuestring, sizeof(out_message->content));
     }
 
-    if (kv_item != NULL && cJSON_IsObject(kv_item)) {
-        size_t offset = 0;
-        cJSON *child = NULL;
-        cJSON_ArrayForEach(child, kv_item) {
-            if (offset >= sizeof(out_message->kv_data) - 2) break;
-            int n = snprintf(out_message->kv_data + offset, sizeof(out_message->kv_data) - offset,
-                "%s", child->string);
-            if (n < 0) break;
-            offset += n;
-            if (offset >= sizeof(out_message->kv_data) - 2) break;
-            const char *val = NULL;
-            char num_buf[32];
-            if (cJSON_IsString(child) && child->valuestring != NULL) {
-                val = child->valuestring;
-            } else if (cJSON_IsNumber(child)) {
-                if (child->valuedouble == (double)child->valueint) {
-                    snprintf(num_buf, sizeof(num_buf), "%d", child->valueint);
-                } else {
-                    snprintf(num_buf, sizeof(num_buf), "%.1f", child->valuedouble);
-                }
-                val = num_buf;
-            }
-            if (val != NULL) {
-                n = snprintf(out_message->kv_data + offset, sizeof(out_message->kv_data) - offset,
-                    ": %s\n", val);
-                if (n > 0) offset += n;
-            } else {
-                if (offset + 2 <= sizeof(out_message->kv_data)) {
-                    memcpy(out_message->kv_data + offset, "\n", 2);
-                    offset += 1;
-                }
-            }
-        }
-        if (offset > 0 && out_message->kv_data[offset - 1] == '\n') {
-            out_message->kv_data[offset - 1] = '\0';
-        }
+    if (info_item != NULL && cJSON_IsString(info_item) && info_item->valuestring != NULL) {
+        strlcpy(out_message->kv_data, info_item->valuestring, sizeof(out_message->kv_data));
     }
 
     if (timeout_item != NULL) {

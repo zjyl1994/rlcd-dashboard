@@ -90,6 +90,7 @@
 #define MSG_H (SCREEN_HEIGHT - H_SPLIT_Y - 10)
 #define MSG_CONTENT_Y (H_SPLIT_Y + 6)
 #define MSG_FONT_SIZE 24
+#define INFO_FONT_SIZE 22
 #define MSG_PAGE_INTERVAL_MS 10000
 #define MSG_MAX_LINES 40
 #define MSG_LINES_PER_PAGE 3
@@ -115,6 +116,7 @@ static lv_obj_t *prov_ip_label;
 static lv_obj_t *prov_hint_label;
 static lv_font_t *font_clock = NULL;
 static lv_font_t *font_msg = NULL;
+static lv_font_t *font_info = NULL;
 static lv_font_t *font_date = NULL;
 static lv_obj_t *kv_label;
 static lv_timer_t *kv_timer = NULL;
@@ -263,9 +265,11 @@ void dashboard_ui_init(void)
     size_t ttf_size = (size_t)(smiley_ttf_end - smiley_ttf_start);
     font_clock = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, CLOCK_FONT_SIZE);
     font_msg = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, MSG_FONT_SIZE);
+    font_info = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, INFO_FONT_SIZE);
     font_date = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, DATE_FONT_SIZE);
     if (font_clock == NULL) font_clock = (lv_font_t *)&lv_font_montserrat_48;
     if (font_msg == NULL) font_msg = (lv_font_t *)&lv_font_montserrat_24;
+    if (font_info == NULL) font_info = (lv_font_t *)&lv_font_montserrat_24;
     if (font_date == NULL) font_date = (lv_font_t *)&lv_font_montserrat_14;
 
     screen_obj = lv_obj_create(NULL);
@@ -330,7 +334,7 @@ void dashboard_ui_init(void)
     (void)battery_cap;
     battery_fill = create_box(main_view, BATTERY_FILL_X, BATTERY_FILL_Y, 0, BATTERY_FILL_H, false);
 
-    kv_label = create_label(main_view, KV_LABEL_X, KV_LABEL_Y, KV_LABEL_W, LV_TEXT_ALIGN_CENTER, font_msg);
+    kv_label = create_label(main_view, KV_LABEL_X, KV_LABEL_Y, KV_LABEL_W, LV_TEXT_ALIGN_LEFT, font_info);
     lv_obj_set_height(kv_label, KV_LABEL_H);
     lv_label_set_long_mode(kv_label, LV_LABEL_LONG_CLIP);
     lv_obj_set_style_text_line_space(kv_label, 2, 0);
