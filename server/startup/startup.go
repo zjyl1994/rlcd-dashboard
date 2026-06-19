@@ -14,6 +14,8 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/gin-gonic/gin"
 	"github.com/zjyl1994/rlcd-dashboard/server/deepseek"
+	"github.com/zjyl1994/rlcd-dashboard/server/forex"
+	"github.com/zjyl1994/rlcd-dashboard/server/gold"
 	"github.com/zjyl1994/rlcd-dashboard/server/handler"
 	"github.com/zjyl1994/rlcd-dashboard/server/vars"
 )
@@ -27,7 +29,7 @@ func Start() error {
 		return err
 	}
 
-	startBalanceTask()
+	startCollectTask()
 
 	router := gin.Default()
 	handler.RegisterRoute(router)
@@ -119,24 +121,73 @@ func connectMqtt() error {
 	return nil
 }
 
-func startBalanceTask() {
-	if vars.Config.DeepSeek.Key == "" {
-		return
-	}
-
+func startCollectTask() {
 	go func() {
-		// wait for mqtt to be ready
-		time.Sleep(3 * time.Second)
-		if err := deepseek.FetchAndPublish(); err != nil {
-			log.Printf("deepseek balance (initial): %v", err)
-		}
-
+		collectAndPublish()
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := deepseek.FetchAndPublish(); err != nil {
-				log.Printf("deepseek balance: %v", err)
-			}
+			collectAndPublish()
 		}
 	}()
+}
+
+type kvFields struct {
+	Gold     string `json:"黄金,omitempty"`
+	USD      string `json:"美元,omitempty"`
+	HKD      string `json:"港币,omitempty"`
+	DSBalance string `json:"DS余额,omitempty"`
+}
+
+func collectAndPublish() {
+	var kv kvFields
+	hasData := false
+
+	if price, err := gold.FetchPrice(); err != nil {
+		log.Printf("gold price: %v", err)
+	} else {
+		kv.Gold = price
+		hasData = true
+	}
+
+	if usd, hkd, err := forex.FetchRates(); err != nil {
+		log.Printf("forex: %v", err)
+	} else {
+		kv.USD = usd
+		kv.HKD = hkd
+		hasData = true
+	}
+
+	if vars.Config.DeepSeek.Key != "" {
+		if balance, err := deepseek.FetchBalance(); err != nil {
+			log.Printf("deepseek balance: %v", err)
+		} else {
+			kv.DSBalance = balance
+			hasData = true
+		}
+	}
+
+	if !hasData {
+		return
+	}
+
+	payload := struct {
+		KV      kvFields `json:"kv"`
+		Timeout int      `json:"timeout"`
+	}{
+		KV:      kv,
+		Timeout: 0,
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("marshal payload: %v", err)
+		return
+	}
+
+	token := vars.Mqtt.Publish(vars.Config.Mqtt.Topic, 0, false, data)
+	token.Wait()
+	if err := token.Error(); err != nil {
+		log.Printf("mqtt publish: %v", err)
+	}
 }

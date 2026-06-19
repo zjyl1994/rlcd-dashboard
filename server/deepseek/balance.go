@@ -22,76 +22,42 @@ type balanceResponse struct {
 	BalanceInfos []balanceInfo `json:"balance_infos"`
 }
 
-type mqttPayload struct {
-	KV      map[string]interface{} `json:"kv"`
-	Timeout int                    `json:"timeout"`
-}
-
-func FetchAndPublish() error {
-	if vars.Config.DeepSeek.Key == "" {
-		return nil
-	}
-
-	balance, err := fetchBalance()
-	if err != nil {
-		return fmt.Errorf("fetch deepseek balance: %w", err)
-	}
-
-	var total string
-	for _, info := range balance.BalanceInfos {
-		if info.Currency == "CNY" {
-			total = info.TotalBalance
-			break
-		}
-	}
-	if total == "" && len(balance.BalanceInfos) > 0 {
-		total = balance.BalanceInfos[0].TotalBalance
-	}
-
-	payload := mqttPayload{
-		KV: map[string]interface{}{
-			"DS余额": total,
-		},
-		Timeout: 0,
-	}
-
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
-	}
-
-	token := vars.Mqtt.Publish(vars.Config.Mqtt.Topic, 0, false, data)
-	token.Wait()
-	return token.Error()
-}
-
-func fetchBalance() (*balanceResponse, error) {
+func FetchBalance() (string, error) {
 	req, err := http.NewRequest("GET", "https://api.deepseek.com/user/balance", nil)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+vars.Config.DeepSeek.Key)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("api returned status %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("api returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result balanceResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("unmarshal response: %w (body: %s)", err, string(body))
+		return "", fmt.Errorf("unmarshal response: %w (body: %s)", err, string(body))
 	}
 
-	return &result, nil
+	for _, info := range result.BalanceInfos {
+		if info.Currency == "CNY" {
+			return info.TotalBalance, nil
+		}
+	}
+	if len(result.BalanceInfos) > 0 {
+		return result.BalanceInfos[0].TotalBalance, nil
+	}
+
+	return "", fmt.Errorf("no balance info found")
 }
