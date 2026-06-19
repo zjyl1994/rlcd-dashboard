@@ -15,6 +15,7 @@ const (
 	StatusWorking         AgentStatus = iota
 	StatusError           AgentStatus = iota
 	StatusWaitingApproval AgentStatus = iota
+	StatusOff             AgentStatus = iota
 )
 
 var statusNames = map[AgentStatus]string{
@@ -22,6 +23,7 @@ var statusNames = map[AgentStatus]string{
 	StatusWorking:         "working",
 	StatusError:           "error",
 	StatusWaitingApproval: "waiting_approval",
+	StatusOff:             "off",
 }
 
 func ParseAgentStatus(s string) (AgentStatus, error) {
@@ -71,6 +73,10 @@ func ReportAgentStatus(agentName string, status AgentStatus, message string) err
 		val = 3
 		beep = 3
 		timeout = 60
+	case StatusOff:
+		val = 0
+		beep = 0
+		timeout = 0
 	default:
 		return fmt.Errorf("unknown agent status: %d", status)
 	}

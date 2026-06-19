@@ -3,23 +3,14 @@ import type { Plugin } from "@opencode-ai/plugin"
 const API_BASE = "http://localhost:7523"
 const AGENT_NAME = "agent1"
 
-type Status = "success" | "working" | "error" | "waiting_approval"
+type Status = "success" | "working" | "error" | "waiting_approval" | "off"
 
-async function report(
-  status: Status,
-  message: string,
-) {
+async function report(status: Status, message: string) {
   try {
     await fetch(`${API_BASE}/api/opencode/report`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        agent_name: AGENT_NAME,
-        status,
-        message,
-      }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_name: AGENT_NAME, status, message }),
     })
   } catch (e) {
     console.error("[report] failed", e)
@@ -41,21 +32,36 @@ export const MyPlugin: Plugin = async () => {
   await report("success", "Agent就绪")
 
   return {
-    event: async ({ event }) => {
-      const type = event?.type
+    dispose: async () => {
+      await report("off", "")
+    },
 
-      if (
-        type === "session.created" ||
-        type === "session.status" ||
-        type === "session.updated" ||
-        type === "session.compacted"
-      ) {
-        await report("working", "Agent工作中...")
+    event: async ({ event }) => {
+      const { type, properties } = event as any
+
+      if (type === "session.status") {
+        const st = properties?.status?.type
+        if (st === "idle") {
+          await report("success", "Agent任务完成")
+        } else if (st === "busy") {
+          await report("working", "Agent工作中...")
+        } else if (st === "retry") {
+          if (properties?.status?.action) {
+            await report("waiting_approval", "需要人工介入: " + toText(event))
+          } else {
+            await report("working", "Agent重试中...")
+          }
+        }
         return
       }
 
-      if (type === "session.deleted" || type === "session.idle") {
+      if (type === "session.idle") {
         await report("success", "Agent任务完成")
+        return
+      }
+
+      if (type === "server.instance.disposed") {
+        await report("off", "")
         return
       }
 
@@ -64,23 +70,23 @@ export const MyPlugin: Plugin = async () => {
         return
       }
 
-      if (type === "permission.asked" || type === "permission.replied") {
+      if (type === "permission.asked" || type === "permission.v2.asked") {
         await report("waiting_approval", "需要人工审批: " + toText(event))
         return
       }
 
-      if (type === "tool.execute.before") {
-        const tool = event?.tool ?? event?.name
-        if (tool === "question" || tool === "ask" || tool === "input") {
-          await report("waiting_approval", "Agent等待你的回复: " + toText(event))
-        } else {
-          await report("working", "Agent执行: " + tool)
-        }
+      if (type === "question.asked") {
+        await report("waiting_approval", "Agent等待回答: " + toText(event))
         return
       }
 
-      if (type === "tool.execute.after") {
-        await report("working", "Agent思考中...")
+      if (
+        type === "permission.replied" ||
+        type === "permission.v2.replied" ||
+        type === "question.replied" ||
+        type === "question.rejected"
+      ) {
+        await report("working", "Agent继续工作...")
         return
       }
     },
