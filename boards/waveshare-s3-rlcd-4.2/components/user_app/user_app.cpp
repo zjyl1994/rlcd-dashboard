@@ -97,7 +97,7 @@ static constexpr int AUDIO_SOUND_VOLUME_LOUD = 100;
 static constexpr int BOOT_BUTTON_STARTUP_IGNORE_MS = 8000;
 static constexpr int BUTTON_POLL_PERIOD_MS = 20;
 static constexpr int UI_HOUSEKEEPING_PERIOD_MS = 1000;
-static constexpr int CLOCK_UPDATE_PERIOD_MS = 60000;
+static constexpr int CLOCK_UPDATE_PERIOD_MS = 1000;
 static constexpr int SENSOR_UPDATE_PERIOD_MS = 15000;
 static constexpr int BATTERY_UPDATE_PERIOD_MS = 60000;
 static constexpr int WIFI_MONITOR_CONNECTED_PERIOD_MS = 60000;
@@ -3064,31 +3064,35 @@ static void ui_housekeeping_task(void *arg)
 static void clock_task(void *arg)
 {
     LV_UNUSED(arg);
-    int last_second = -1;
     int last_year = -1;
     int last_month = -1;
     int last_day = -1;
 
     while (1) {
-        time_t now = time(NULL);
         struct tm time_info = {};
-        bool have_time = (now != (time_t)-1) && (localtime_r(&now, &time_info) != NULL);
+        bool have_time = false;
 
-        if (!have_time && rtc_ready) {
+        if (rtc_ready) {
             rtcTimeStruct_t rtc_time = {};
             Rtc_GetTime(&rtc_time);
-            time_info.tm_year = rtc_time.year - 1900;
-            time_info.tm_mon = rtc_time.month - 1;
-            time_info.tm_mday = rtc_time.day;
-            time_info.tm_hour = rtc_time.hour;
-            time_info.tm_min = rtc_time.minute;
-            time_info.tm_sec = rtc_time.second;
-            time_info.tm_wday = rtc_time.week;
-            have_time = true;
+            if (rtc_time.year >= 2020) {
+                time_info.tm_year = rtc_time.year - 1900;
+                time_info.tm_mon = rtc_time.month - 1;
+                time_info.tm_mday = rtc_time.day;
+                time_info.tm_hour = rtc_time.hour;
+                time_info.tm_min = rtc_time.minute;
+                time_info.tm_sec = rtc_time.second;
+                time_info.tm_wday = rtc_time.week;
+                have_time = true;
+            }
         }
 
-        if (have_time && time_info.tm_sec != last_second) {
-            last_second = time_info.tm_sec;
+        if (!have_time) {
+            time_t now = time(NULL);
+            have_time = (now != (time_t)-1) && (localtime_r(&now, &time_info) != NULL);
+        }
+
+        if (have_time) {
             if (Lvgl_lock(-1)) {
                 dashboard_ui_update_time(time_info.tm_hour, time_info.tm_min, time_info.tm_sec);
                 if (time_info.tm_year != last_year || time_info.tm_mon != last_month || time_info.tm_mday != last_day) {
