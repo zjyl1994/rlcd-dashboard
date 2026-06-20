@@ -17,6 +17,7 @@ import (
 	"github.com/zjyl1994/rlcd-dashboard/server/forex"
 	"github.com/zjyl1994/rlcd-dashboard/server/gold"
 	"github.com/zjyl1994/rlcd-dashboard/server/handler"
+	"github.com/zjyl1994/rlcd-dashboard/server/stock"
 	"github.com/zjyl1994/rlcd-dashboard/server/vars"
 )
 
@@ -28,6 +29,9 @@ func Start() error {
 	if err := connectMqtt(); err != nil {
 		return err
 	}
+
+	stock.Register(&stock.TencentFetcher{})
+	stock.Register(&stock.SinaFetcher{})
 
 	startCollectTask()
 
@@ -135,17 +139,36 @@ func startCollectTask() {
 func collectAndPublish() {
 	var lines []string
 
-	if price, err := gold.FetchPrice(); err != nil {
-		log.Printf("gold price: %v", err)
-	} else {
-		lines = append(lines, "黄金: "+price)
+	if vars.Config.Gold {
+		if price, err := gold.FetchPrice(); err != nil {
+			log.Printf("gold price: %v", err)
+		} else {
+			lines = append(lines, "黄金: "+price)
+		}
 	}
 
-	if usd, hkd, err := forex.FetchRates(); err != nil {
-		log.Printf("forex: %v", err)
-	} else {
-		lines = append(lines, "美元: "+usd)
-		lines = append(lines, "港币: "+hkd)
+	if len(vars.Config.Forex) > 0 {
+		if rates, err := forex.FetchRates(); err != nil {
+			log.Printf("forex: %v", err)
+		} else {
+			for _, name := range vars.Config.Forex {
+				if price, ok := rates[name]; ok {
+					lines = append(lines, name+": "+price)
+				}
+			}
+		}
+	}
+
+	if len(vars.Config.Stocks) > 0 {
+		if quotes, err := stock.Fetch(vars.Config.Stocks); err != nil {
+			log.Printf("stocks: %v", err)
+		} else {
+			for _, code := range vars.Config.Stocks {
+				if q, ok := quotes[code]; ok {
+					lines = append(lines, strings.ToUpper(code)+": "+q.Price)
+				}
+			}
+		}
 	}
 
 	if vars.Config.DeepSeek.Key != "" {

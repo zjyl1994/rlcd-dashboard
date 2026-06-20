@@ -20,49 +20,42 @@ type fxResponse struct {
 	Body       []fxItem `json:"body"`
 }
 
-func FetchRates() (usd, hkd string, err error) {
+func FetchRates() (map[string]string, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get("https://fx.cmbchina.com/api/v1/fx/rate")
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("api returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("api returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result fxResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", "", fmt.Errorf("unmarshal response: %w (body: %s)", err, string(body))
+		return nil, fmt.Errorf("unmarshal response: %w (body: %s)", err, string(body))
 	}
 
 	if result.ReturnCode != "SUC0000" {
-		return "", "", fmt.Errorf("api return code: %s", result.ReturnCode)
+		return nil, fmt.Errorf("api return code: %s", result.ReturnCode)
 	}
 
+	rates := make(map[string]string, len(result.Body))
 	for _, item := range result.Body {
-		switch item.CcyNbr {
-		case "美元":
-			usd = avg(item.RtbBid, item.RthOfr)
-		case "港币":
-			hkd = avg(item.RtbBid, item.RthOfr)
-		}
+		rates[item.CcyNbr] = avg(item.RtbBid, item.RthOfr)
 	}
 
-	if usd == "" {
-		return "", "", fmt.Errorf("USD not found")
-	}
-	if hkd == "" {
-		return "", "", fmt.Errorf("HKD not found")
+	if len(rates) == 0 {
+		return nil, fmt.Errorf("no currencies found in response")
 	}
 
-	return usd, hkd, nil
+	return rates, nil
 }
 
 func avg(bid, ofr string) string {

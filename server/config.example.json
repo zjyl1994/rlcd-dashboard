@@ -10,5 +10,8 @@
     },
     "deepseek": {
         "key": ""
-    }
+    },
+    "gold": true,
+    "forex": ["美元", "港币"],
+    "stocks": ["000001.sh", "399001.sz", "inx.us", "VOO.us"]
 }

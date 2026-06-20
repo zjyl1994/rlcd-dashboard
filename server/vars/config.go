@@ -1,10 +1,13 @@
 package vars
 
 type ConfigS struct {
-	Name      string   `json:"name"`
-	Listen    string   `json:"listen"`
-	Mqtt      MqttS    `json:"mqtt"`
-	DeepSeek  DeepSeekS `json:"deepseek"`
+	Name     string     `json:"name"`
+	Listen   string     `json:"listen"`
+	Mqtt     MqttS      `json:"mqtt"`
+	DeepSeek DeepSeekS  `json:"deepseek"`
+	Gold     bool       `json:"gold"`
+	Forex    []string   `json:"forex"`
+	Stocks   []string   `json:"stocks"`
 }
 
 type DeepSeekS struct {
