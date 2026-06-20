@@ -54,7 +54,7 @@ func toTencentCode(code string) string {
 	if len(parts) != 2 {
 		return code
 	}
-	c, market := parts[0], parts[1]
+	c, market := parts[0], strings.ToLower(parts[1])
 	switch market {
 	case "sh", "sz":
 		return market + c

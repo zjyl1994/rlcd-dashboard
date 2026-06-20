@@ -152,8 +152,8 @@ func collectAndPublish() {
 			log.Printf("forex: %v", err)
 		} else {
 			for _, name := range vars.Config.Forex {
-				if price, ok := rates[name]; ok {
-					lines = append(lines, name+": "+price)
+				if price, ok := rates[strings.ToUpper(name)]; ok {
+					lines = append(lines, strings.ToUpper(name)+": "+price)
 				}
 			}
 		}

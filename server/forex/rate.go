@@ -6,13 +6,15 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type fxItem struct {
-	CcyNbr string `json:"ccyNbr"`
-	RtbBid string `json:"rtbBid"`
-	RthOfr string `json:"rthOfr"`
+	CcyNbr    string `json:"ccyNbr"`
+	CcyNbrEng string `json:"ccyNbrEng"`
+	RtbBid    string `json:"rtbBid"`
+	RthOfr    string `json:"rthOfr"`
 }
 
 type fxResponse struct {
@@ -48,7 +50,11 @@ func FetchRates() (map[string]string, error) {
 
 	rates := make(map[string]string, len(result.Body))
 	for _, item := range result.Body {
-		rates[item.CcyNbr] = avg(item.RtbBid, item.RthOfr)
+		iso := parseISO(item.CcyNbrEng)
+		if iso == "" {
+			iso = item.CcyNbr
+		}
+		rates[iso] = avg(item.RtbBid, item.RthOfr)
 	}
 
 	if len(rates) == 0 {
@@ -56,6 +62,14 @@ func FetchRates() (map[string]string, error) {
 	}
 
 	return rates, nil
+}
+
+func parseISO(eng string) string {
+	parts := strings.Fields(eng)
+	if len(parts) >= 2 {
+		return parts[len(parts)-1]
+	}
+	return ""
 }
 
 func avg(bid, ofr string) string {

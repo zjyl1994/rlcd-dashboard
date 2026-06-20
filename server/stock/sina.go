@@ -91,7 +91,7 @@ func sinaQueryCodes(code string) []string {
 	if len(parts) != 2 {
 		return []string{code}
 	}
-	c, market := parts[0], parts[1]
+	c, market := strings.ToLower(parts[0]), strings.ToLower(parts[1])
 	switch market {
 	case "sh", "sz":
 		return []string{market + c}
