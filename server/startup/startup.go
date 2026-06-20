@@ -128,16 +128,34 @@ func connectMqtt() error {
 func startCollectTask() {
 	go func() {
 		collectAndPublish()
-		ticker := time.NewTicker(5 * time.Minute)
+		ticker := time.NewTicker(currentInterval())
 		defer ticker.Stop()
 		for range ticker.C {
 			collectAndPublish()
+			ticker.Reset(currentInterval())
 		}
 	}()
 }
 
+func currentInterval() time.Duration {
+	s := vars.Config.Schedule
+	if s == nil || s.DayInterval <= 0 || s.NightInterval <= 0 {
+		h := time.Now().Hour()
+		if h >= 6 && h < 22 {
+			return 5 * time.Minute
+		}
+		return 15 * time.Minute
+	}
+	h := time.Now().Hour()
+	if h >= s.StartHour && h < s.EndHour {
+		return time.Duration(s.DayInterval) * time.Minute
+	}
+	return time.Duration(s.NightInterval) * time.Minute
+}
+
 func collectAndPublish() {
 	var lines []string
+	lines = append(lines, "== "+time.Now().Format("01.02 15:04")+" ==")
 
 	if vars.Config.Gold {
 		if price, err := gold.FetchPrice(); err != nil {

@@ -1,5 +1,12 @@
 package vars
 
+type ScheduleS struct {
+	StartHour     int `json:"start_hour"`
+	EndHour       int `json:"end_hour"`
+	DayInterval   int `json:"day_interval"`
+	NightInterval int `json:"night_interval"`
+}
+
 type ConfigS struct {
 	Name     string     `json:"name"`
 	Listen   string     `json:"listen"`
@@ -8,6 +15,7 @@ type ConfigS struct {
 	Gold     bool       `json:"gold"`
 	Forex    []string   `json:"forex"`
 	Stocks   []string   `json:"stocks"`
+	Schedule *ScheduleS `json:"schedule"`
 }
 
 type DeepSeekS struct {
