@@ -48,10 +48,10 @@
 #define TOP_ICON_H 14
 #define TEMP_LABEL_X (STATUS_X + 8)
 #define TEMP_LABEL_W 120
-#define MQTT_BADGE_X 338
+#define MQTT_BADGE_X 333
 #define MQTT_BADGE_Y TOP_ICON_Y
 #define MQTT_BADGE_SZ TOP_ICON_H
-#define WIFI_ICON_X 356
+#define WIFI_ICON_X 351
 #define WIFI_BAR_W 3
 #define WIFI_BAR_STEP 4
 #define WIFI_BAR_0_Y (TOP_ICON_Y + 10)
@@ -62,18 +62,24 @@
 #define WIFI_BAR_2_H 10
 #define WIFI_BAR_3_Y (TOP_ICON_Y + 1)
 #define WIFI_BAR_3_H 13
-#define BATTERY_OUTLINE_X 374
+#define BATTERY_OUTLINE_X 370
 #define BATTERY_OUTLINE_Y TOP_ICON_Y
-#define BATTERY_OUTLINE_W 18
+#define BATTERY_OUTLINE_W 25
 #define BATTERY_OUTLINE_H TOP_ICON_H
 #define BATTERY_CAP_X (BATTERY_OUTLINE_X + BATTERY_OUTLINE_W)
 #define BATTERY_CAP_Y (TOP_ICON_Y + 4)
-#define BATTERY_CAP_W 2
+#define BATTERY_CAP_W 1
 #define BATTERY_CAP_H 6
-#define BATTERY_FILL_X (BATTERY_OUTLINE_X + 3)
-#define BATTERY_FILL_Y (BATTERY_OUTLINE_Y + 3)
-#define BATTERY_FILL_H 8
-#define BATTERY_FILL_MAX_W 12
+#define BATTERY_PAD 2
+#define BATTERY_SEG_COUNT 4
+#define BATTERY_SEG_GAP 1
+#define BATTERY_SEG_W 4
+#define BATTERY_SEG_Y (BATTERY_OUTLINE_Y + 1 + BATTERY_PAD)
+#define BATTERY_SEG_H (BATTERY_OUTLINE_H - 2 - BATTERY_PAD * 2)
+#define BATTERY_SEG_0_X (BATTERY_OUTLINE_X + 1 + BATTERY_PAD)
+#define BATTERY_SEG_1_X (BATTERY_SEG_0_X + BATTERY_SEG_W + BATTERY_SEG_GAP)
+#define BATTERY_SEG_2_X (BATTERY_SEG_1_X + BATTERY_SEG_W + BATTERY_SEG_GAP)
+#define BATTERY_SEG_3_X (BATTERY_SEG_2_X + BATTERY_SEG_W + BATTERY_SEG_GAP)
 /* KV display in top-right below icons */
 #define KV_LABEL_X (STATUS_X + 8)
 #define KV_LABEL_Y 26
@@ -103,7 +109,7 @@ static lv_obj_t *date_label;
 static lv_obj_t *temp_humi_label;
 static lv_obj_t *wifi_bars[4];
 static lv_obj_t *wifi_mqtt_badge;
-static lv_obj_t *battery_fill;
+static lv_obj_t *battery_segments[BATTERY_SEG_COUNT];
 static lv_obj_t *msg_content_label;
 static lv_timer_t *msg_timer = NULL;
 static EXT_RAM_BSS_ATTR char msg_lines[MSG_MAX_LINES][128];
@@ -183,13 +189,11 @@ static void set_wifi_level(bool connected, int level)
 
 static void set_battery_level(int level)
 {
-    int width = 0;
-    if (level > 0) {
-        width = (level * BATTERY_FILL_MAX_W) / 100;
-        if (width < 2) width = 2;
+    int filled = (level * BATTERY_SEG_COUNT + 99) / 100;
+    if (filled > BATTERY_SEG_COUNT) filled = BATTERY_SEG_COUNT;
+    for (int i = 0; i < BATTERY_SEG_COUNT; i++) {
+        lv_obj_set_style_bg_color(battery_segments[i], i < filled ? UI_FG_COLOR : UI_BG_COLOR, 0);
     }
-    lv_obj_set_width(battery_fill, width);
-    lv_obj_set_style_bg_color(battery_fill, width > 0 ? UI_FG_COLOR : UI_BG_COLOR, 0);
 }
 
 static void mqtt_badge_draw_event_cb(lv_event_t *e)
@@ -211,11 +215,11 @@ static void mqtt_badge_draw_event_cb(lv_event_t *e)
     lv_obj_get_coords(obj, &coords);
 
     if (mqtt_badge_connected) {
-        lv_point_precise_set(&line_dsc.p1, coords.x1 + 3, coords.y1 + 7);
-        lv_point_precise_set(&line_dsc.p2, coords.x1 + 5, coords.y1 + 10);
+        lv_point_precise_set(&line_dsc.p1, coords.x1 + 3, coords.y1 + 9);
+        lv_point_precise_set(&line_dsc.p2, coords.x1 + 5, coords.y1 + 12);
         lv_draw_line(layer, &line_dsc);
-        lv_point_precise_set(&line_dsc.p1, coords.x1 + 5, coords.y1 + 10);
-        lv_point_precise_set(&line_dsc.p2, coords.x1 + 10, coords.y1 + 4);
+        lv_point_precise_set(&line_dsc.p1, coords.x1 + 5, coords.y1 + 12);
+        lv_point_precise_set(&line_dsc.p2, coords.x1 + 10, coords.y1 + 6);
         lv_draw_line(layer, &line_dsc);
     } else {
         lv_point_precise_set(&line_dsc.p1, coords.x1 + 3, coords.y1 + 3);
@@ -332,7 +336,10 @@ void dashboard_ui_init(void)
     lv_obj_t *battery_cap = create_box(main_view, BATTERY_CAP_X, BATTERY_CAP_Y, BATTERY_CAP_W, BATTERY_CAP_H, true);
     lv_obj_set_style_radius(battery_cap, 1, 0);
     (void)battery_cap;
-    battery_fill = create_box(main_view, BATTERY_FILL_X, BATTERY_FILL_Y, 0, BATTERY_FILL_H, false);
+    const int seg_x[BATTERY_SEG_COUNT] = {BATTERY_SEG_0_X, BATTERY_SEG_1_X, BATTERY_SEG_2_X, BATTERY_SEG_3_X};
+    for (int i = 0; i < BATTERY_SEG_COUNT; i++) {
+        battery_segments[i] = create_box(main_view, seg_x[i], BATTERY_SEG_Y, BATTERY_SEG_W, BATTERY_SEG_H, false);
+    }
 
     kv_label = create_label(main_view, KV_LABEL_X, KV_LABEL_Y, KV_LABEL_W, LV_TEXT_ALIGN_LEFT, font_info);
     lv_obj_set_height(kv_label, KV_LABEL_H);
@@ -563,7 +570,7 @@ void dashboard_ui_update_wifi_status(bool connected, const char *ssid, int rssi)
 
 void dashboard_ui_update_battery(int level)
 {
-    if (battery_fill == NULL) return;
+    if (battery_segments[0] == NULL) return;
     if (level < 0) level = 0;
     if (level > 100) level = 100;
     set_battery_level(level);
