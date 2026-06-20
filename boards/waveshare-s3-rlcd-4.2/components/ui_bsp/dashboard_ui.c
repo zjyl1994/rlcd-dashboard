@@ -48,12 +48,12 @@
 #define TOP_ICON_H 14
 #define TEMP_LABEL_X (STATUS_X + 8)
 #define TEMP_LABEL_W 120
-#define MQTT_BADGE_X 333
+#define MQTT_BADGE_X 329
 #define MQTT_BADGE_Y TOP_ICON_Y
 #define MQTT_BADGE_SZ TOP_ICON_H
-#define WIFI_ICON_X 351
-#define WIFI_BAR_W 3
-#define WIFI_BAR_STEP 4
+#define WIFI_ICON_X 347
+#define WIFI_BAR_W 4
+#define WIFI_BAR_STEP 5
 #define WIFI_BAR_0_Y (TOP_ICON_Y + 10)
 #define WIFI_BAR_0_H 4
 #define WIFI_BAR_1_Y (TOP_ICON_Y + 7)
@@ -215,11 +215,11 @@ static void mqtt_badge_draw_event_cb(lv_event_t *e)
     lv_obj_get_coords(obj, &coords);
 
     if (mqtt_badge_connected) {
-        lv_point_precise_set(&line_dsc.p1, coords.x1 + 3, coords.y1 + 9);
+        lv_point_precise_set(&line_dsc.p1, coords.x1 + 2, coords.y1 + 8);
         lv_point_precise_set(&line_dsc.p2, coords.x1 + 5, coords.y1 + 12);
         lv_draw_line(layer, &line_dsc);
         lv_point_precise_set(&line_dsc.p1, coords.x1 + 5, coords.y1 + 12);
-        lv_point_precise_set(&line_dsc.p2, coords.x1 + 10, coords.y1 + 6);
+        lv_point_precise_set(&line_dsc.p2, coords.x1 + 12, coords.y1 + 2);
         lv_draw_line(layer, &line_dsc);
     } else {
         lv_point_precise_set(&line_dsc.p1, coords.x1 + 3, coords.y1 + 3);
