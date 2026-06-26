@@ -197,6 +197,10 @@ func collectAndPublish() {
 		}
 	}
 
+	if vars.AiUsageText != "" {
+		lines = append(lines, vars.AiUsageText)
+	}
+
 	if len(lines) == 0 {
 		return
 	}

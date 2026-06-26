@@ -38,5 +38,7 @@ func ReportHandler(c *gin.Context) {
 }
 
 func RegisterRoute(r gin.IRoutes) {
-	r.POST("/api/opencode/report", ReportHandler)
+	auth := ApiKeyAuth()
+	r.POST("/api/opencode/report", auth, ReportHandler)
+	r.POST("/api/cch-quota-report", auth, AiUsageReportHandler)
 }

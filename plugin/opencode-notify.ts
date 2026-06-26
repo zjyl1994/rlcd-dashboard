@@ -2,14 +2,17 @@ import type { Plugin } from "@opencode-ai/plugin"
 
 const API_BASE = "http://localhost:7523"
 const AGENT_NAME = "agent1"
+const API_KEY = ""
 
 type Status = "success" | "working" | "error" | "waiting_approval" | "off"
 
 async function report(status: Status, message: string) {
   try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" }
+    if (API_KEY) headers["X-Api-Key"] = API_KEY
     await fetch(`${API_BASE}/api/opencode/report`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ agent_name: AGENT_NAME, status, message }),
     })
   } catch (e) {

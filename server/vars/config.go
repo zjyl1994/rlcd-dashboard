@@ -10,6 +10,7 @@ type ScheduleS struct {
 type ConfigS struct {
 	Name     string     `json:"name"`
 	Listen   string     `json:"listen"`
+	ApiKey   string     `json:"api_key"`
 	Mqtt     MqttS      `json:"mqtt"`
 	DeepSeek DeepSeekS  `json:"deepseek"`
 	Gold     bool       `json:"gold"`
