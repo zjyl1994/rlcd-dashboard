@@ -993,7 +993,7 @@ static bool audio_init(void)
 
     codec_init_cfg_t codec_cfg = {};
     codec_cfg.in_mode = CODEC_I2S_MODE_NONE;
-    codec_cfg.out_mode = CODEC_I2S_MODE_TDM;
+    codec_cfg.out_mode = CODEC_I2S_MODE_STD;
     codec_cfg.in_use_tdm = false;
     codec_cfg.reuse_dev = false;
     if (init_codec(&codec_cfg) != 0) {
