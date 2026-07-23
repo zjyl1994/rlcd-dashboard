@@ -24,6 +24,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 #include <freertos/task.h>
+#include <lwip/netdb.h>
 #include <lwip/inet.h>
 #include <lwip/sockets.h>
 #include <mqtt_client.h>
@@ -61,14 +62,19 @@ static constexpr int MAX_SCAN_RESULTS = 20;
 static constexpr uint32_t DEVICE_CONFIG_VERSION = 2;
 static constexpr uint32_t WIFI_STORE_VERSION = 1;
 static constexpr int WIFI_CONNECT_TIMEOUT_MS = 15000;
+static constexpr int WIFI_NETWORK_READY_TIMEOUT_MS = 15000;
+static constexpr int WIFI_NETWORK_PROBE_RETRY_PERIOD_MS = 500;
 static constexpr uint16_t WIFI_LISTEN_INTERVAL_BEACONS = 20;
 static constexpr int STATUS_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MESSAGE_MAX_LEN = 512;
 static constexpr int MQTT_KEEPALIVE_SECONDS = 120;
 static constexpr int MQTT_RECONNECT_TIMEOUT_MS = 10000;
+static constexpr int MQTT_CONNECT_STALL_TIMEOUT_MS = 30000;
 static constexpr int MQTT_MAINT_CONNECTED_PERIOD_MS = 5000;
 static constexpr int MQTT_MAINT_DISCONNECTED_PERIOD_MS = 5000;
+static constexpr int NTP_SYNC_TIMEOUT_MS = 15000;
+static constexpr int NTP_RETRY_PERIOD_MS = 30000;
 static constexpr int AUDIO_BEEP_SAMPLE_RATE = 24000;
 static constexpr int AUDIO_BEEP_CHANNELS = 2;
 static constexpr int AUDIO_BEEP_BITS_PER_SAMPLE = 16;
@@ -100,10 +106,11 @@ static constexpr int UI_HOUSEKEEPING_PERIOD_MS = 1000;
 static constexpr int CLOCK_UPDATE_PERIOD_MS = 1000;
 static constexpr int SENSOR_UPDATE_PERIOD_MS = 15000;
 static constexpr int BATTERY_UPDATE_PERIOD_MS = 60000;
-static constexpr int WIFI_MONITOR_CONNECTED_PERIOD_MS = 60000;
+static constexpr int WIFI_MONITOR_CONNECTED_PERIOD_MS = 5000;
 static constexpr int WIFI_MONITOR_DISCONNECTED_PERIOD_MS = 5000;
 static constexpr EventBits_t WIFI_CONNECTED_BIT = BIT0;
 static constexpr EventBits_t WIFI_CONNECT_FAIL_BIT = BIT1;
+static constexpr EventBits_t WIFI_NETWORK_READY_BIT = BIT2;
 
 typedef struct {
     uint8_t asset_id;
@@ -199,6 +206,7 @@ static wifi_ap_record_t provision_scan_records[MAX_SCAN_RESULTS] = {};
 static uint16_t provision_scan_count = 0;
 static bool wifi_started = false;
 static bool wifi_connected = false;
+static bool wifi_network_ready = false;
 static bool mqtt_connected = false;
 static bool mqtt_restart_requested = false;
 static bool prov_active = false;
@@ -223,6 +231,7 @@ static char provision_ap_ip[16] = {0};
 static int64_t status_message_expire_at_us = 0;
 static int64_t message_overlay_expire_at_us = 0;
 static esp_mqtt_client_handle_t mqtt_client = NULL;
+static int64_t mqtt_client_started_at_us = 0;
 static char mqtt_broker_uri[192] = {0};
 static char mqtt_message_topic[128] = {0};
 static char mqtt_client_id[64] = {0};
@@ -243,6 +252,8 @@ static mqtt_overlay_message_t last_message = {};
 static bool boot_button_armed = false;
 static bool key_button_armed = false;
 static TickType_t key_button_press_ticks = 0;
+static SemaphoreHandle_t ntp_sync_mutex = NULL;
+static TaskHandle_t ntp_task_handle = NULL;
 
 static void wifi_enter_provisioning(void);
 static void wifi_exit_provisioning(bool reconnect_saved);
@@ -272,7 +283,8 @@ static void request_manual_network_sync(void);
 static void handle_short_key_press(void);
 static void handle_long_key_press(void);
 static void handle_short_boot_press(void);
-static void ntp_sync_once(void);
+static bool ntp_sync_once(void);
+static void ntp_notify_task(void);
 static void ui_set_default_status_message_locked(void);
 static bool sync_system_time_from_rtc(void);
 static void wifi_apply_power_save(bool connected, bool provisioning);
@@ -280,6 +292,9 @@ static void power_management_init(void);
 static void overlay_input_power_lock_set(bool active);
 static void sync_message_input_power_lock(void);
 static int wifi_store_count_snapshot(void);
+static bool wifi_probe_network(void);
+static bool wifi_wait_for_network_ready(int timeout_ms);
+static void wifi_set_network_ready(bool ready);
 
 static uint32_t provision_ip_addr(void)
 {
@@ -1175,8 +1190,18 @@ static void manual_network_sync_task(void *arg)
     LV_UNUSED(arg);
 
     bool connected = wifi_connect_saved_networks(false);
+    bool network_ready = false;
+
     if (connected) {
+        state_lock();
+        network_ready = wifi_network_ready;
+        state_unlock();
+    }
+
+    if (connected && network_ready) {
         ntp_sync_once();
+    } else if (connected) {
+        ui_set_status_message("Wi-Fi connected\nWaiting for network");
     } else {
         ui_set_status_message("Manual reconnect failed");
     }
@@ -1712,6 +1737,101 @@ static void buttons_init(void)
              BOOT_BUTTON_STARTUP_IGNORE_MS);
 }
 
+static void ntp_notify_task(void)
+{
+    TaskHandle_t task;
+
+    state_lock();
+    task = ntp_task_handle;
+    state_unlock();
+
+    if (task != NULL) {
+        xTaskNotifyGive(task);
+    }
+}
+
+static bool wifi_probe_network(void)
+{
+    esp_netif_ip_info_t ip_info = {};
+    struct addrinfo hints = {};
+    struct addrinfo *result = NULL;
+
+    if (!wifi_started || sta_netif == NULL
+        || esp_netif_get_ip_info(sta_netif, &ip_info) != ESP_OK
+        || ip_info.ip.addr == 0 || ip_info.gw.addr == 0) {
+        return false;
+    }
+
+    // DHCP can report an address before the station has usable DNS routing.
+    // Resolve the same host used by NTP before allowing network services to start.
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    int err = getaddrinfo("ntp.aliyun.com", NULL, &hints, &result);
+    if (result != NULL) {
+        freeaddrinfo(result);
+    }
+
+    return err == 0;
+}
+
+static void wifi_set_network_ready(bool ready)
+{
+    bool changed;
+
+    state_lock();
+    if (!wifi_connected) {
+        ready = false;
+    }
+    changed = wifi_network_ready != ready;
+    wifi_network_ready = ready;
+    state_unlock();
+
+    if (wifi_event_group != NULL) {
+        if (ready) {
+            xEventGroupSetBits(wifi_event_group, WIFI_NETWORK_READY_BIT);
+        } else {
+            xEventGroupClearBits(wifi_event_group, WIFI_NETWORK_READY_BIT);
+        }
+    }
+
+    if (changed) {
+        ESP_LOGI(TAG, "Network readiness -> %s", ready ? "ready" : "waiting");
+        wifi_apply_power_save(ready, false);
+        ntp_notify_task();
+    }
+}
+
+static bool wifi_wait_for_network_ready(int timeout_ms)
+{
+    int64_t deadline = esp_timer_get_time() + ((int64_t)timeout_ms * 1000);
+
+    while (1) {
+        bool local_connected;
+        bool local_ready;
+
+        state_lock();
+        local_connected = wifi_connected;
+        local_ready = wifi_network_ready;
+        state_unlock();
+
+        if (!local_connected) {
+            return false;
+        }
+        if (local_ready) {
+            return true;
+        }
+        if (wifi_probe_network()) {
+            wifi_set_network_ready(true);
+            return true;
+        }
+        if (esp_timer_get_time() >= deadline) {
+            return false;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(WIFI_NETWORK_PROBE_RETRY_PERIOD_MS));
+    }
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     LV_UNUSED(arg);
@@ -1722,6 +1842,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
         state_lock();
         wifi_connected = false;
+        wifi_network_ready = false;
         mqtt_connected = false;
         connected_ssid[0] = '\0';
         connected_rssi = -127;
@@ -1729,7 +1850,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         local_provisioning = prov_active;
         state_unlock();
 
-        xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
+        xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT | WIFI_NETWORK_READY_BIT);
+        ntp_notify_task();
         if (local_connecting) {
             xEventGroupSetBits(wifi_event_group, WIFI_CONNECT_FAIL_BIT);
         }
@@ -1746,7 +1868,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         wifi_config_t active_cfg = {};
+        wifi_ap_record_t ap_record = {};
         char ip_text[16];
+        char ssid[33] = {0};
+        int rssi = -127;
 
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_get_config(WIFI_IF_STA, &active_cfg));
         format_ip(&event->ip_info, ip_text, sizeof(ip_text));
@@ -1754,12 +1879,22 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         state_lock();
         wifi_connected = true;
         strlcpy(connected_ssid, (const char *)active_cfg.sta.ssid, sizeof(connected_ssid));
+        strlcpy(ssid, connected_ssid, sizeof(ssid));
         state_unlock();
+
+        if (esp_wifi_sta_get_ap_info(&ap_record) == ESP_OK) {
+            rssi = ap_record.rssi;
+            state_lock();
+            connected_rssi = rssi;
+            state_unlock();
+        }
 
         xEventGroupClearBits(wifi_event_group, WIFI_CONNECT_FAIL_BIT);
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
-        ui_set_statusf("Connected\n%s (%s)", connected_ssid[0] ? connected_ssid : "Wi-Fi", ip_text);
-        wifi_apply_power_save(true, false);
+        wifi_set_network_ready(false);
+        ui_update_wifi_icon(true, ssid[0] ? ssid : "Wi-Fi", rssi);
+        ui_set_statusf("Connected\n%s (%s)", ssid[0] ? ssid : "Wi-Fi", ip_text);
+        wifi_apply_power_save(false, false);
     }
 }
 
@@ -1900,6 +2035,7 @@ static int wifi_build_candidate_order(
 static bool wifi_try_connect_credential(const saved_wifi_credential_t *credential)
 {
     wifi_config_t station_cfg = {};
+    bool local_connected = false;
 
     strlcpy((char *)station_cfg.sta.ssid, credential->ssid, sizeof(station_cfg.sta.ssid));
     strlcpy((char *)station_cfg.sta.password, credential->password, sizeof(station_cfg.sta.password));
@@ -1931,15 +2067,16 @@ static bool wifi_try_connect_credential(const saved_wifi_credential_t *credentia
     EventBits_t bits = xEventGroupWaitBits(
         wifi_event_group,
         WIFI_CONNECTED_BIT | WIFI_CONNECT_FAIL_BIT,
-        pdTRUE,
+        pdFALSE,
         pdFALSE,
         pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
 
     state_lock();
     connect_in_progress = false;
+    local_connected = wifi_connected;
     state_unlock();
 
-    if (bits & WIFI_CONNECTED_BIT) {
+    if ((bits & WIFI_CONNECTED_BIT) && local_connected) {
         return true;
     }
 
@@ -2617,6 +2754,9 @@ static bool wifi_connect_saved_networks(bool enter_provision_on_fail)
 
     for (int index = 0; index < order_count; index++) {
         if (wifi_try_connect_credential(&store.entries[order[index]])) {
+            if (!wifi_wait_for_network_ready(WIFI_NETWORK_READY_TIMEOUT_MS)) {
+                ESP_LOGW(TAG, "Wi-Fi has an IP but network is not ready yet");
+            }
             return true;
         }
     }
@@ -2677,8 +2817,30 @@ static bool schedule_provisioning_action(bool enter, bool reconnect_saved)
     return true;
 }
 
-static void ntp_sync_once(void)
+static bool ntp_sync_once(void)
 {
+    bool local_network_ready;
+
+    state_lock();
+    local_network_ready = wifi_network_ready;
+    state_unlock();
+    if (!local_network_ready) {
+        ESP_LOGI(TAG, "Skip NTP sync: network is not ready");
+        return false;
+    }
+
+    if (ntp_sync_mutex == NULL || xSemaphoreTake(ntp_sync_mutex, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+
+    state_lock();
+    local_network_ready = wifi_network_ready;
+    state_unlock();
+    if (!local_network_ready) {
+        xSemaphoreGive(ntp_sync_mutex);
+        return false;
+    }
+
     ui_set_status_message("Syncing time from\nntp.aliyun.com");
 
     esp_sntp_stop();
@@ -2686,7 +2848,7 @@ static void ntp_sync_once(void)
     esp_sntp_setservername(0, "ntp.aliyun.com");
     esp_sntp_init();
 
-    for (int retry = 0; retry < 15; retry++) {
+    for (int elapsed_ms = 0; elapsed_ms < NTP_SYNC_TIMEOUT_MS; elapsed_ms += 1000) {
         if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
             time_t now;
             struct tm time_info;
@@ -2704,13 +2866,26 @@ static void ntp_sync_once(void)
             }
             ui_set_status_message("NTP synced");
             esp_sntp_stop();
-            return;
+            xSemaphoreGive(ntp_sync_mutex);
+            return true;
         }
+
+        state_lock();
+        local_network_ready = wifi_network_ready;
+        state_unlock();
+        if (!local_network_ready) {
+            esp_sntp_stop();
+            xSemaphoreGive(ntp_sync_mutex);
+            return false;
+        }
+
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
     esp_sntp_stop();
     ui_set_status_message("NTP sync timeout");
+    xSemaphoreGive(ntp_sync_mutex);
+    return false;
 }
 
 static void mqtt_reset_message_accumulator(void)
@@ -2789,12 +2964,21 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     LV_UNUSED(handler_args);
     LV_UNUSED(base);
     esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+    esp_mqtt_client_handle_t current_client;
+
+    state_lock();
+    current_client = mqtt_client;
+    state_unlock();
+    if (event == NULL || event->client == NULL || event->client != current_client) {
+        return;
+    }
 
     switch ((esp_mqtt_event_id_t)event_id) {
         case MQTT_EVENT_CONNECTED:
             build_mqtt_message_topic(mqtt_message_topic, sizeof(mqtt_message_topic));
             state_lock();
             mqtt_connected = true;
+            mqtt_client_started_at_us = esp_timer_get_time();
             state_unlock();
             esp_mqtt_client_subscribe_single(event->client, mqtt_message_topic, 1);
             ESP_LOGI(TAG, "MQTT connected: %s", mqtt_broker_uri);
@@ -2943,16 +3127,25 @@ static bool mqtt_start_client(void)
     }
 
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_mqtt_client_register_event(client, MQTT_EVENT_ANY, mqtt_event_handler, NULL));
+
+    state_lock();
+    mqtt_client = client;
+    mqtt_client_started_at_us = esp_timer_get_time();
+    mqtt_restart_requested = false;
+    state_unlock();
+
     if (esp_mqtt_client_start(client) != ESP_OK) {
+        state_lock();
+        if (mqtt_client == client) {
+            mqtt_client = NULL;
+            mqtt_client_started_at_us = 0;
+        }
+        state_unlock();
         esp_mqtt_client_destroy(client);
         ui_set_status_message("MQTT start failed");
         return false;
     }
 
-    state_lock();
-    mqtt_client = client;
-    mqtt_restart_requested = false;
-    state_unlock();
     ui_set_statusf("Connecting MQTT\n%s", mqtt_broker_uri);
     return true;
 }
@@ -2965,6 +3158,7 @@ static void mqtt_stop_client(void)
     client = mqtt_client;
     mqtt_client = NULL;
     mqtt_connected = false;
+    mqtt_client_started_at_us = 0;
     mqtt_restart_requested = false;
     mqtt_message_expected_len = 0;
     mqtt_message_received_len = 0;
@@ -2986,28 +3180,42 @@ static void mqtt_maintenance_task(void *arg)
 
     while (1) {
         bool local_wifi_connected;
+        bool local_network_ready;
         bool local_provisioning;
         bool local_restart_requested;
         bool local_mqtt_valid;
+        bool local_mqtt_connected;
+        int64_t local_client_started_at_us;
         esp_mqtt_client_handle_t local_client;
         mqtt_config_t mqtt_settings;
 
         mqtt_config_snapshot(&mqtt_settings);
         state_lock();
         local_wifi_connected = wifi_connected;
+        local_network_ready = wifi_network_ready;
         local_provisioning = prov_active;
         local_restart_requested = mqtt_restart_requested;
+        local_mqtt_connected = mqtt_connected;
+        local_client_started_at_us = mqtt_client_started_at_us;
         local_client = mqtt_client;
         local_mqtt_valid = mqtt_settings.valid && mqtt_settings.host[0] != '\0';
         state_unlock();
 
-        if (local_client != NULL && (!local_wifi_connected || local_provisioning || !local_mqtt_valid || local_restart_requested)) {
+        bool client_connection_stalled = local_client != NULL
+            && !local_mqtt_connected
+            && local_client_started_at_us > 0
+            && (esp_timer_get_time() - local_client_started_at_us) >= ((int64_t)MQTT_CONNECT_STALL_TIMEOUT_MS * 1000);
+
+        if (local_client != NULL && (!local_wifi_connected || !local_network_ready || local_provisioning
+                                     || !local_mqtt_valid || local_restart_requested || client_connection_stalled)) {
             mqtt_stop_client();
-        } else if (local_client == NULL && local_wifi_connected && !local_provisioning && local_mqtt_valid) {
+        } else if (local_client == NULL && local_wifi_connected && local_network_ready
+                   && !local_provisioning && local_mqtt_valid) {
             mqtt_start_client();
         }
 
-        int delay_ms = (local_client != NULL && local_wifi_connected && !local_provisioning && local_mqtt_valid && !local_restart_requested)
+        int delay_ms = (local_client != NULL && local_wifi_connected && local_network_ready
+                        && !local_provisioning && local_mqtt_valid && !local_restart_requested)
                        ? MQTT_MAINT_CONNECTED_PERIOD_MS
                        : MQTT_MAINT_DISCONNECTED_PERIOD_MS;
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
@@ -3150,15 +3358,19 @@ static void wifi_monitor_task(void *arg)
         bool local_connected;
         bool local_provisioning;
         bool local_connecting;
+        bool local_manual_sync;
+        bool local_provisioning_action;
 
         state_lock();
         local_connected = wifi_connected;
         local_provisioning = prov_active;
         local_connecting = connect_in_progress;
+        local_manual_sync = manual_network_sync_in_progress;
+        local_provisioning_action = provisioning_action_in_progress;
         state_unlock();
 
         if (local_connected) {
-            wifi_ap_record_t ap_record;
+            wifi_ap_record_t ap_record = {};
             reconnect_ticks = 0;
             if (esp_wifi_sta_get_ap_info(&ap_record) == ESP_OK) {
                 state_lock();
@@ -3166,8 +3378,22 @@ static void wifi_monitor_task(void *arg)
                 strlcpy(connected_ssid, (const char *)ap_record.ssid, sizeof(connected_ssid));
                 state_unlock();
                 ui_update_wifi_icon(true, (const char *)ap_record.ssid, ap_record.rssi);
+                wifi_set_network_ready(wifi_probe_network());
+            } else {
+                state_lock();
+                wifi_connected = false;
+                wifi_network_ready = false;
+                mqtt_connected = false;
+                connected_ssid[0] = '\0';
+                connected_rssi = -127;
+                state_unlock();
+                xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT | WIFI_NETWORK_READY_BIT);
+                ntp_notify_task();
+                ui_update_wifi_icon(false, NULL, 0);
+                ui_update_mqtt_icon(false);
             }
-        } else if (!local_provisioning && !local_connecting && wifi_store_count_snapshot() > 0) {
+        } else if (!local_provisioning && !local_connecting && !local_manual_sync
+                   && !local_provisioning_action && wifi_store_count_snapshot() > 0) {
             reconnect_ticks++;
             if (reconnect_ticks >= 3) {
                 reconnect_ticks = 0;
@@ -3183,13 +3409,26 @@ static void ntp_task(void *arg)
 {
     LV_UNUSED(arg);
     const TickType_t sync_interval = pdMS_TO_TICKS((uint32_t)CONFIG_NTP_SYNC_INTERVAL_MIN * 60U * 1000U);
+    const TickType_t retry_interval = pdMS_TO_TICKS(NTP_RETRY_PERIOD_MS);
 
     while (1) {
-        xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        ntp_sync_once();
+        EventBits_t bits = xEventGroupWaitBits(
+            wifi_event_group,
+            WIFI_NETWORK_READY_BIT,
+            pdFALSE,
+            pdTRUE,
+            portMAX_DELAY);
+        if ((bits & WIFI_NETWORK_READY_BIT) == 0) {
+            continue;
+        }
 
-        vTaskDelay(sync_interval);
+        bool synced = ntp_sync_once();
+
+        // Network transitions notify this task so a reconnect does not have to
+        // wait for the normal long synchronization interval.
+        while (ulTaskNotifyTake(pdTRUE, 0) > 0) {
+        }
+        ulTaskNotifyTake(pdTRUE, synced ? sync_interval : retry_interval);
     }
 }
 
@@ -3328,6 +3567,8 @@ void UserApp_AppInit(void)
     assert(state_mutex != NULL);
     wifi_event_group = xEventGroupCreate();
     assert(wifi_event_group != NULL);
+    ntp_sync_mutex = xSemaphoreCreateMutex();
+    assert(ntp_sync_mutex != NULL);
 
     wifi_store_load();
     device_config_load();
@@ -3358,7 +3599,7 @@ void UserApp_TaskInit(void)
     xTaskCreatePinnedToCore(wifi_monitor_task, "wifi_mon", 6 * 1024, NULL, 2, NULL, 1);
     xTaskCreatePinnedToCore(mqtt_maintenance_task, "mqtt_maint", 5 * 1024, NULL, 2, NULL, 1);
     xTaskCreatePinnedToCore(ui_housekeeping_task, "ui_housekeep", 4 * 1024, NULL, 1, NULL, 1);
-    xTaskCreatePinnedToCore(ntp_task, "ntp", 4 * 1024, NULL, 2, NULL, 1);
+    xTaskCreatePinnedToCore(ntp_task, "ntp", 4 * 1024, NULL, 2, &ntp_task_handle, 1);
     xTaskCreatePinnedToCore(boot_button_task, "boot_btn", 3 * 1024, NULL, 2, NULL, 1);
     xTaskCreatePinnedToCore(network_startup_task, "net_start", 6 * 1024, NULL, 3, NULL, 1);
 }
