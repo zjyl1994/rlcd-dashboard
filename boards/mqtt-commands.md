@@ -27,7 +27,7 @@
 
 | Value | Effect |
 |-------|--------|
-| `"任何文本"` | 在屏幕中间显示 overlay 文本，最长 512 字节 |
+| `"任何文本"` | 在屏幕中间显示 overlay 文本；完整 MQTT JSON payload 上限为 4096 字节 |
 | 不传或 `null` | 不显示 overlay，不清除已有显示 |
 
 ### `info`

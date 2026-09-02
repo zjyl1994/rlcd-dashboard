@@ -67,7 +67,7 @@ static constexpr int WIFI_NETWORK_PROBE_RETRY_PERIOD_MS = 500;
 static constexpr uint16_t WIFI_LISTEN_INTERVAL_BEACONS = 20;
 static constexpr int STATUS_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MESSAGE_TIMEOUT_MS = 10000;
-static constexpr int MQTT_MESSAGE_MAX_LEN = 512;
+static constexpr size_t MQTT_MESSAGE_MAX_LEN = 4096;
 static constexpr int MQTT_KEEPALIVE_SECONDS = 120;
 static constexpr int MQTT_RECONNECT_TIMEOUT_MS = 10000;
 static constexpr int MQTT_CONNECT_STALL_TIMEOUT_MS = 30000;
@@ -237,9 +237,9 @@ static char mqtt_message_topic[128] = {0};
 static char mqtt_client_id[64] = {0};
 static char mqtt_username[64] = {0};
 static char mqtt_password[64] = {0};
-static char mqtt_message_buffer[MQTT_MESSAGE_MAX_LEN + 1] = {0};
-static int mqtt_message_expected_len = 0;
-static int mqtt_message_received_len = 0;
+static char *mqtt_message_buffer = NULL;
+static size_t mqtt_message_expected_len = 0;
+static size_t mqtt_message_received_len = 0;
 static bool mqtt_message_collecting = false;
 static bool mqtt_message_topic_match = false;
 static bool audio_beep_ready = false;
@@ -1134,7 +1134,8 @@ static void ui_cache_restore(void)
     }
     if (nvs_get_str(h, "msg_data", NULL, &len) == ESP_OK && len > 1 && len <= sizeof(buf)) {
         if (nvs_get_str(h, "msg_data", buf, &len) == ESP_OK) {
-            mqtt_overlay_message_t m = {};
+            static mqtt_overlay_message_t m;
+            memset(&m, 0, sizeof(m));
             strlcpy(m.content, buf, sizeof(m.content));
             cache_last_message(&m);
             dashboard_ui_show_message(NULL, buf);
@@ -1175,7 +1176,9 @@ static bool snapshot_last_message(mqtt_overlay_message_t *message)
 
 static void recall_last_message_fullscreen(void)
 {
-    mqtt_overlay_message_t message = {};
+    static mqtt_overlay_message_t message;
+
+    memset(&message, 0, sizeof(message));
 
     if (!snapshot_last_message(&message)) {
         ui_set_status_message("No cached message");
@@ -1377,7 +1380,9 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
 
 static void mqtt_handle_received_message(const char *payload)
 {
-    mqtt_overlay_message_t message = {};
+    static mqtt_overlay_message_t message;
+
+    memset(&message, 0, sizeof(message));
 
     if (!mqtt_parse_overlay_message(payload, &message)) {
         ESP_LOGW(TAG, "MQTT payload is not valid JSON: %s", payload != NULL ? payload : "<null>");
@@ -2890,13 +2895,18 @@ static bool ntp_sync_once(void)
 
 static void mqtt_reset_message_accumulator(void)
 {
-    state_lock();
-    mqtt_message_expected_len = 0;
-    mqtt_message_received_len = 0;
-    mqtt_message_collecting = false;
-    mqtt_message_topic_match = false;
-    mqtt_message_buffer[0] = '\0';
-    state_unlock();
+	char *buffer;
+
+	state_lock();
+	buffer = mqtt_message_buffer;
+	mqtt_message_buffer = NULL;
+	mqtt_message_expected_len = 0;
+	mqtt_message_received_len = 0;
+	mqtt_message_collecting = false;
+	mqtt_message_topic_match = false;
+	state_unlock();
+
+	free(buffer);
 }
 
 static void ui_set_mqtt_error_status(const esp_mqtt_error_codes_t *error)
@@ -3018,42 +3028,65 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
             if (event->current_data_offset == 0) {
                 bool topic_match = (event->topic_len == (int)strlen(mqtt_message_topic))
-                                  && (strncmp(event->topic, mqtt_message_topic, (size_t)event->topic_len) == 0)
-                                  && (event->total_data_len <= MQTT_MESSAGE_MAX_LEN);
+                                  && (strncmp(event->topic, mqtt_message_topic, (size_t)event->topic_len) == 0);
+                char *message_buffer = NULL;
+
+                mqtt_reset_message_accumulator();
+                if (topic_match
+                    && event->total_data_len >= 0
+                    && (size_t)event->total_data_len <= MQTT_MESSAGE_MAX_LEN) {
+                    message_buffer = (char *)malloc((size_t)event->total_data_len + 1);
+                    if (message_buffer == NULL) {
+                        ESP_LOGW(TAG, "MQTT payload allocation failed: %d bytes", event->total_data_len);
+                    }
+                } else if (topic_match) {
+                    ESP_LOGW(
+                        TAG,
+                        "MQTT payload too large: %d bytes, maximum is %u",
+                        event->total_data_len,
+                        (unsigned int)MQTT_MESSAGE_MAX_LEN);
+                }
 
                 state_lock();
-                mqtt_message_expected_len = event->total_data_len;
+                mqtt_message_buffer = message_buffer;
+                mqtt_message_expected_len = message_buffer != NULL
+                    ? (size_t)event->total_data_len
+                    : 0;
                 mqtt_message_received_len = 0;
-                mqtt_message_collecting = topic_match;
-                mqtt_message_topic_match = topic_match;
-                mqtt_message_buffer[0] = '\0';
+                mqtt_message_collecting = topic_match && message_buffer != NULL;
+                mqtt_message_topic_match = topic_match && message_buffer != NULL;
+                if (message_buffer != NULL) {
+                    message_buffer[0] = '\0';
+                }
                 state_unlock();
 
-                if (!topic_match) {
+                if (message_buffer == NULL || !topic_match) {
                     break;
                 }
             }
 
             state_lock();
             bool collecting = mqtt_message_collecting && mqtt_message_topic_match;
-            int current_len = mqtt_message_received_len;
-            int expected_len = mqtt_message_expected_len;
+            char *message_buffer = mqtt_message_buffer;
+            size_t current_len = mqtt_message_received_len;
+            size_t expected_len = mqtt_message_expected_len;
             state_unlock();
 
-            if (!collecting) {
+            if (!collecting || message_buffer == NULL || current_len > expected_len
+                || (size_t)event->current_data_offset != current_len) {
+                if (collecting && (size_t)event->current_data_offset != current_len) {
+                    ESP_LOGW(TAG, "MQTT payload fragment offset mismatch");
+                    mqtt_reset_message_accumulator();
+                }
                 break;
             }
 
-            int copy_len = event->data_len;
-            if (copy_len > (MQTT_MESSAGE_MAX_LEN - current_len)) {
-                copy_len = MQTT_MESSAGE_MAX_LEN - current_len;
-            }
-            if (copy_len < 0) {
-                copy_len = 0;
+            size_t copy_len = (event->data_len > 0) ? (size_t)event->data_len : 0;
+            if (copy_len > (expected_len - current_len)) {
+                copy_len = expected_len - current_len;
             }
 
-            bool complete = false;
-            char message_copy[MQTT_MESSAGE_MAX_LEN + 1] = {0};
+            char *complete_payload = NULL;
 
             state_lock();
             if (copy_len > 0) {
@@ -3063,8 +3096,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             }
 
             if (mqtt_message_received_len >= expected_len) {
-                strlcpy(message_copy, mqtt_message_buffer, sizeof(message_copy));
-                complete = true;
+                complete_payload = mqtt_message_buffer;
+                mqtt_message_buffer = NULL;
                 mqtt_message_expected_len = 0;
                 mqtt_message_received_len = 0;
                 mqtt_message_collecting = false;
@@ -3072,8 +3105,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             }
             state_unlock();
 
-            if (complete) {
-                mqtt_handle_received_message(message_copy);
+            if (complete_payload != NULL) {
+                mqtt_handle_received_message(complete_payload);
+                free(complete_payload);
             }
             break;
         }
@@ -3160,12 +3194,9 @@ static void mqtt_stop_client(void)
     mqtt_connected = false;
     mqtt_client_started_at_us = 0;
     mqtt_restart_requested = false;
-    mqtt_message_expected_len = 0;
-    mqtt_message_received_len = 0;
-    mqtt_message_collecting = false;
-    mqtt_message_topic_match = false;
-    mqtt_message_buffer[0] = '\0';
     state_unlock();
+
+    mqtt_reset_message_accumulator();
 
     ui_update_mqtt_icon(false);
     if (client != NULL) {

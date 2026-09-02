@@ -7,6 +7,8 @@ import (
 	"github.com/zjyl1994/rlcd-dashboard/server/vars"
 )
 
+const mqttPayloadMaxLen = 4096
+
 // mqttDisplayPayload mirrors the payload already understood by the firmware.
 // A pointer timeout lets us distinguish an omitted timeout from timeout=0.
 type mqttDisplayPayload struct {
@@ -75,8 +77,8 @@ func publishDisplayPayload(payload mqttDisplayPayload) error {
 	if err != nil {
 		return fmt.Errorf("marshal error: %w", err)
 	}
-	if len(data) > 512 {
-		return fmt.Errorf("mqtt payload is too large: %d bytes, maximum is 512", len(data))
+	if len(data) > mqttPayloadMaxLen {
+		return fmt.Errorf("mqtt payload is too large: %d bytes, maximum is %d", len(data), mqttPayloadMaxLen)
 	}
 
 	token := vars.Mqtt.Publish(vars.Config.Mqtt.Topic, 0, false, data)
