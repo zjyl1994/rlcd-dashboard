@@ -1,6 +1,9 @@
 #include "dashboard_ui.h"
 #include "libs/tiny_ttf/lv_tiny_ttf.h"
 #include "esp_attr.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -100,6 +103,8 @@
 #define MSG_PAGE_INTERVAL_MS 10000
 #define MSG_MAX_LINES 40
 #define MSG_LINES_PER_PAGE 3
+
+static const char *TAG = "dashboard_ui";
 
 static lv_obj_t *screen_obj;
 static lv_obj_t *main_view;
@@ -267,10 +272,25 @@ static lv_obj_t *create_divider_v(lv_obj_t *parent, int x, int y, int h)
 void dashboard_ui_init(void)
 {
     size_t ttf_size = (size_t)(smiley_ttf_end - smiley_ttf_start);
+    ESP_LOGI(TAG, "UI init: font data=%u bytes, main stack free=%u bytes",
+        (unsigned)ttf_size,
+        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
     font_clock = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, CLOCK_FONT_SIZE);
+    ESP_LOGI(TAG, "UI init: clock font=%s, main stack free=%u bytes",
+        font_clock != NULL ? "ok" : "fallback",
+        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
     font_msg = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, MSG_FONT_SIZE);
+    ESP_LOGI(TAG, "UI init: message font=%s, main stack free=%u bytes",
+        font_msg != NULL ? "ok" : "fallback",
+        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
     font_info = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, INFO_FONT_SIZE);
+    ESP_LOGI(TAG, "UI init: info font=%s, main stack free=%u bytes",
+        font_info != NULL ? "ok" : "fallback",
+        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
     font_date = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, DATE_FONT_SIZE);
+    ESP_LOGI(TAG, "UI init: date font=%s, main stack free=%u bytes",
+        font_date != NULL ? "ok" : "fallback",
+        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
     if (font_clock == NULL) font_clock = (lv_font_t *)&lv_font_montserrat_48;
     if (font_msg == NULL) font_msg = (lv_font_t *)&lv_font_montserrat_24;
     if (font_info == NULL) font_info = (lv_font_t *)&lv_font_montserrat_24;
@@ -630,5 +650,3 @@ void dashboard_ui_set_provisioning(bool active, const char *ap_ssid, const char 
         lv_label_set_text(prov_ip_label, "Address: --");
     }
 }
-
-

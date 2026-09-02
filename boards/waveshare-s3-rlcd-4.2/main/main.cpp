@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <esp_log.h>
 
 #include "display_bsp.h"
@@ -51,10 +52,12 @@ extern "C" void app_main(void)
     UserApp_AppInit();
     ESP_LOGI(MAIN_TAG, "App init done");
     if (Lvgl_lock(-1)) {
-        ESP_LOGI(MAIN_TAG, "Creating UI...");
+        ESP_LOGI(MAIN_TAG, "Creating UI, main stack free=%u bytes...",
+            (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
         UserApp_UiInit();
         Lvgl_unlock();
-        ESP_LOGI(MAIN_TAG, "UI created");
+        ESP_LOGI(MAIN_TAG, "UI created, main stack free=%u bytes",
+            (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
     }
     UserApp_TaskInit();
     ESP_LOGI(MAIN_TAG, "=== Dashboard running ===");

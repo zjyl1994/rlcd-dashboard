@@ -68,6 +68,8 @@ static constexpr uint16_t WIFI_LISTEN_INTERVAL_BEACONS = 20;
 static constexpr int STATUS_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr int MQTT_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr size_t MQTT_MESSAGE_MAX_LEN = 4096;
+static constexpr size_t UI_TEXT_MAX_LEN = 4096;
+static constexpr size_t UI_CACHE_MAX_LEN = UI_TEXT_MAX_LEN;
 static constexpr int MQTT_KEEPALIVE_SECONDS = 120;
 static constexpr int MQTT_RECONNECT_TIMEOUT_MS = 10000;
 static constexpr int MQTT_CONNECT_STALL_TIMEOUT_MS = 30000;
@@ -184,8 +186,8 @@ typedef struct {
     int beep_type;
     int agent1;
     int agent2;
-    char content[MQTT_MESSAGE_MAX_LEN + 1];
-    char kv_data[MQTT_MESSAGE_MAX_LEN + 1];
+    char content[UI_TEXT_MAX_LEN + 1];
+    char kv_data[UI_TEXT_MAX_LEN + 1];
 } mqtt_overlay_message_t;
 
 static I2cMasterBus *i2cbus = NULL;
@@ -1121,25 +1123,47 @@ static void ui_cache_save_msg(const char *msg)
     nvs_close(h);
 }
 
+static char *ui_cache_read_string(nvs_handle_t h, const char *key)
+{
+    size_t len = 0;
+
+    if (nvs_get_str(h, key, NULL, &len) != ESP_OK
+        || len <= 1 || len > UI_CACHE_MAX_LEN + 1) {
+        return NULL;
+    }
+
+    char *buf = (char *)malloc(len);
+    if (buf == NULL) {
+        ESP_LOGW(TAG, "UI cache allocation failed: key=%s bytes=%u",
+            key, (unsigned)len);
+        return NULL;
+    }
+
+    if (nvs_get_str(h, key, buf, &len) != ESP_OK) {
+        free(buf);
+        return NULL;
+    }
+
+    return buf;
+}
+
 static void ui_cache_restore(void)
 {
     nvs_handle_t h;
     if (nvs_open(UI_CACHE_NS, NVS_READONLY, &h) != ESP_OK) return;
-    size_t len;
-    char buf[MQTT_MESSAGE_MAX_LEN + 1];
-    if (nvs_get_str(h, "kv_data", NULL, &len) == ESP_OK && len > 1 && len <= sizeof(buf)) {
-        if (nvs_get_str(h, "kv_data", buf, &len) == ESP_OK) {
-            dashboard_ui_update_kv(buf);
-        }
+    char *buf = ui_cache_read_string(h, "kv_data");
+    if (buf != NULL) {
+        dashboard_ui_update_kv(buf);
+        free(buf);
     }
-    if (nvs_get_str(h, "msg_data", NULL, &len) == ESP_OK && len > 1 && len <= sizeof(buf)) {
-        if (nvs_get_str(h, "msg_data", buf, &len) == ESP_OK) {
-            static mqtt_overlay_message_t m;
-            memset(&m, 0, sizeof(m));
-            strlcpy(m.content, buf, sizeof(m.content));
-            cache_last_message(&m);
-            dashboard_ui_show_message(NULL, buf);
-        }
+    buf = ui_cache_read_string(h, "msg_data");
+    if (buf != NULL) {
+        static mqtt_overlay_message_t m;
+        memset(&m, 0, sizeof(m));
+        strlcpy(m.content, buf, sizeof(m.content));
+        cache_last_message(&m);
+        dashboard_ui_show_message(NULL, buf);
+        free(buf);
     }
     nvs_close(h);
 }
