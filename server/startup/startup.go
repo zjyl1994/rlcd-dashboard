@@ -4,20 +4,14 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/gin-gonic/gin"
-	"github.com/zjyl1994/rlcd-dashboard/server/deepseek"
-	"github.com/zjyl1994/rlcd-dashboard/server/forex"
-	"github.com/zjyl1994/rlcd-dashboard/server/gold"
 	"github.com/zjyl1994/rlcd-dashboard/server/handler"
-	"github.com/zjyl1994/rlcd-dashboard/server/stock"
 	"github.com/zjyl1994/rlcd-dashboard/server/vars"
 )
 
@@ -29,11 +23,6 @@ func Start() error {
 	if err := connectMqtt(); err != nil {
 		return err
 	}
-
-	stock.Register(&stock.TencentFetcher{})
-	stock.Register(&stock.SinaFetcher{})
-
-	startCollectTask()
 
 	router := gin.Default()
 	handler.RegisterRoute(router)
@@ -123,105 +112,4 @@ func connectMqtt() error {
 
 	vars.Mqtt = client
 	return nil
-}
-
-func startCollectTask() {
-	go func() {
-		collectAndPublish()
-		ticker := time.NewTicker(currentInterval())
-		defer ticker.Stop()
-		for range ticker.C {
-			collectAndPublish()
-			ticker.Reset(currentInterval())
-		}
-	}()
-}
-
-func currentInterval() time.Duration {
-	s := vars.Config.Schedule
-	if s == nil || s.DayInterval <= 0 || s.NightInterval <= 0 {
-		h := time.Now().Hour()
-		if h >= 6 && h < 22 {
-			return 5 * time.Minute
-		}
-		return 15 * time.Minute
-	}
-	h := time.Now().Hour()
-	if h >= s.StartHour && h < s.EndHour {
-		return time.Duration(s.DayInterval) * time.Minute
-	}
-	return time.Duration(s.NightInterval) * time.Minute
-}
-
-func collectAndPublish() {
-	var lines []string
-	lines = append(lines, "== "+time.Now().Format("01.02 15:04")+" ==")
-
-	if vars.Config.Gold {
-		if price, err := gold.FetchPrice(); err != nil {
-			log.Printf("gold price: %v", err)
-		} else {
-			lines = append(lines, "黄金: "+price)
-		}
-	}
-
-	if len(vars.Config.Forex) > 0 {
-		if rates, err := forex.FetchRates(); err != nil {
-			log.Printf("forex: %v", err)
-		} else {
-			for _, name := range vars.Config.Forex {
-				if price, ok := rates[strings.ToUpper(name)]; ok {
-					lines = append(lines, strings.ToUpper(name)+": "+price)
-				}
-			}
-		}
-	}
-
-	if len(vars.Config.Stocks) > 0 {
-		if quotes, err := stock.Fetch(vars.Config.Stocks); err != nil {
-			log.Printf("stocks: %v", err)
-		} else {
-			for _, code := range vars.Config.Stocks {
-				if q, ok := quotes[code]; ok {
-					lines = append(lines, strings.ToUpper(code)+": "+q.Price)
-				}
-			}
-		}
-	}
-
-	if vars.Config.DeepSeek.Key != "" {
-		if balance, err := deepseek.FetchBalance(); err != nil {
-			log.Printf("deepseek balance: %v", err)
-		} else {
-			lines = append(lines, "DS余额: "+balance)
-		}
-	}
-
-	if vars.AiUsageText != "" {
-		lines = append(lines, vars.AiUsageText)
-	}
-
-	if len(lines) == 0 {
-		return
-	}
-
-	payload := struct {
-		Info    string `json:"info"`
-		Timeout int    `json:"timeout"`
-	}{
-		Info:    strings.Join(lines, "\n"),
-		Timeout: 0,
-	}
-
-	data, err := json.Marshal(payload)
-	if err != nil {
-		log.Printf("marshal payload: %v", err)
-		return
-	}
-
-	token := vars.Mqtt.Publish(vars.Config.Mqtt.Topic, 0, false, data)
-	token.Wait()
-	if err := token.Error(); err != nil {
-		log.Printf("mqtt publish: %v", err)
-	}
 }

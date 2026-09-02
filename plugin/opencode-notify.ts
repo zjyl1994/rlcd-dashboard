@@ -10,11 +10,24 @@ async function report(status: Status, message: string) {
   try {
     const headers: Record<string, string> = { "Content-Type": "application/json" }
     if (API_KEY) headers["X-Api-Key"] = API_KEY
-    await fetch(`${API_BASE}/api/opencode/report`, {
+    const body: {
+      message?: string
+      agents: Record<string, Status>
+    } = {
+      agents: { [AGENT_NAME]: status },
+    }
+    // The firmware treats omitted fields as unchanged. Avoid sending an empty
+    // message because the unified endpoint rejects empty messages.
+    if (message) body.message = message
+
+    const response = await fetch(`${API_BASE}/api/info/report`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ agent_name: AGENT_NAME, status, message }),
+      body: JSON.stringify(body),
     })
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`)
+    }
   } catch (e) {
     console.error("[report] failed", e)
   }

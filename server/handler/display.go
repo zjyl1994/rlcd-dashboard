@@ -7,6 +7,17 @@ import (
 	"github.com/zjyl1994/rlcd-dashboard/server/vars"
 )
 
+// mqttDisplayPayload mirrors the payload already understood by the firmware.
+// A pointer timeout lets us distinguish an omitted timeout from timeout=0.
+type mqttDisplayPayload struct {
+	Info    string `json:"info,omitempty"`
+	Message string `json:"message,omitempty"`
+	Beep    int    `json:"beep,omitempty"`
+	Timeout *int   `json:"timeout,omitempty"`
+	Agent1  *int   `json:"agent1,omitempty"`
+	Agent2  *int   `json:"agent2,omitempty"`
+}
+
 type AgentStatus int
 
 const (
@@ -35,68 +46,37 @@ func ParseAgentStatus(s string) (AgentStatus, error) {
 	return StatusUndefined, fmt.Errorf("unknown agent status: %s", s)
 }
 
-type mqttPayload struct {
-	Message string `json:"message,omitempty"`
-	Beep    int    `json:"beep,omitempty"`
-	Timeout int    `json:"timeout"`
-	Agent1  *int   `json:"agent1,omitempty"`
-	Agent2  *int   `json:"agent2,omitempty"`
+func agentStatusValues(status AgentStatus) (value int, beep int, timeout int, err error) {
+	switch status {
+	case StatusSuccess:
+		return 1, 1, 15, nil
+	case StatusWorking:
+		return 2, 0, 30, nil
+	case StatusError:
+		return 3, 2, 30, nil
+	case StatusWaitingApproval:
+		return 3, 3, 60, nil
+	case StatusOff:
+		return 0, 0, 0, nil
+	default:
+		return 0, 0, 0, fmt.Errorf("unknown agent status: %d", status)
+	}
 }
 
-func ReportAgentStatus(agentName string, status AgentStatus, message string) error {
+func publishDisplayPayload(payload mqttDisplayPayload) error {
 	if vars.Mqtt == nil || !vars.Mqtt.IsConnected() {
 		return fmt.Errorf("mqtt not connected")
 	}
-
 	if vars.Config.Mqtt.Topic == "" {
 		return fmt.Errorf("mqtt topic not configured")
-	}
-
-	var beep int
-	var val int
-	var timeout int
-
-	switch status {
-	case StatusSuccess:
-		val = 1
-		beep = 1
-		timeout = 15
-	case StatusWorking:
-		val = 2
-		beep = 0
-		timeout = 30
-	case StatusError:
-		val = 3
-		beep = 2
-		timeout = 30
-	case StatusWaitingApproval:
-		val = 3
-		beep = 3
-		timeout = 60
-	case StatusOff:
-		val = 0
-		beep = 0
-		timeout = 0
-	default:
-		return fmt.Errorf("unknown agent status: %d", status)
-	}
-
-	payload := mqttPayload{
-		Message: message,
-		Beep:    beep,
-		Timeout: timeout,
-	}
-
-	switch agentName {
-	case "agent1":
-		payload.Agent1 = &val
-	case "agent2":
-		payload.Agent2 = &val
 	}
 
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal error: %w", err)
+	}
+	if len(data) > 512 {
+		return fmt.Errorf("mqtt payload is too large: %d bytes, maximum is 512", len(data))
 	}
 
 	token := vars.Mqtt.Publish(vars.Config.Mqtt.Topic, 0, false, data)
