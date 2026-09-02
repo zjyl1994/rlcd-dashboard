@@ -3089,45 +3089,46 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 }
             }
 
-            state_lock();
-            bool collecting = mqtt_message_collecting && mqtt_message_topic_match;
-            char *message_buffer = mqtt_message_buffer;
-            size_t current_len = mqtt_message_received_len;
-            size_t expected_len = mqtt_message_expected_len;
-            state_unlock();
+			char *complete_payload = NULL;
+			bool offset_mismatch = false;
 
-            if (!collecting || message_buffer == NULL || current_len > expected_len
-                || (size_t)event->current_data_offset != current_len) {
-                if (collecting && (size_t)event->current_data_offset != current_len) {
-                    ESP_LOGW(TAG, "MQTT payload fragment offset mismatch");
-                    mqtt_reset_message_accumulator();
-                }
-                break;
+			/* Keep the accumulator lock while copying. The maintenance task can
+			 * reset/free the buffer when MQTT disconnects, so a pointer snapshot
+			 * taken before the copy is not safe. */
+			state_lock();
+			bool collecting = mqtt_message_collecting && mqtt_message_topic_match;
+			size_t current_len = mqtt_message_received_len;
+			size_t expected_len = mqtt_message_expected_len;
+            if (!collecting || mqtt_message_buffer == NULL || current_len > expected_len
+				|| (size_t)event->current_data_offset != current_len) {
+				offset_mismatch = collecting && (size_t)event->current_data_offset != current_len;
+			} else {
+				size_t copy_len = (event->data_len > 0) ? (size_t)event->data_len : 0;
+                if (copy_len > (expected_len - current_len)) {
+					copy_len = expected_len - current_len;
+				}
+
+				if (copy_len > 0) {
+					memcpy(mqtt_message_buffer + mqtt_message_received_len, event->data, copy_len);
+					mqtt_message_received_len += copy_len;
+					mqtt_message_buffer[mqtt_message_received_len] = '\0';
+				}
+
+				if (mqtt_message_received_len >= expected_len) {
+					complete_payload = mqtt_message_buffer;
+					mqtt_message_buffer = NULL;
+					mqtt_message_expected_len = 0;
+					mqtt_message_received_len = 0;
+					mqtt_message_collecting = false;
+					mqtt_message_topic_match = false;
+				}
+			}
+			state_unlock();
+
+            if (offset_mismatch) {
+                ESP_LOGW(TAG, "MQTT payload fragment offset mismatch");
+                mqtt_reset_message_accumulator();
             }
-
-            size_t copy_len = (event->data_len > 0) ? (size_t)event->data_len : 0;
-            if (copy_len > (expected_len - current_len)) {
-                copy_len = expected_len - current_len;
-            }
-
-            char *complete_payload = NULL;
-
-            state_lock();
-            if (copy_len > 0) {
-                memcpy(mqtt_message_buffer + mqtt_message_received_len, event->data, (size_t)copy_len);
-                mqtt_message_received_len += copy_len;
-                mqtt_message_buffer[mqtt_message_received_len] = '\0';
-            }
-
-            if (mqtt_message_received_len >= expected_len) {
-                complete_payload = mqtt_message_buffer;
-                mqtt_message_buffer = NULL;
-                mqtt_message_expected_len = 0;
-                mqtt_message_received_len = 0;
-                mqtt_message_collecting = false;
-                mqtt_message_topic_match = false;
-            }
-            state_unlock();
 
             if (complete_payload != NULL) {
                 mqtt_handle_received_message(complete_payload);
@@ -3631,11 +3632,23 @@ void UserApp_AppInit(void)
     power_management_init();
 
     i2cbus = new I2cMasterBus(ESP32_I2C_SCL_PIN, ESP32_I2C_SDA_PIN, 0);
-    Rtc_Setup(i2cbus, 0x51);
-    rtc_ready = true;
-    sync_system_time_from_rtc();
-    shtc3 = new Shtc3Port(*i2cbus);
-    Adc_PortInit();
+    if (i2cbus->IsReady()) {
+        rtc_ready = Rtc_Setup(i2cbus, 0x51);
+        if (rtc_ready) {
+            sync_system_time_from_rtc();
+        } else {
+            ESP_LOGW(TAG, "RTC unavailable; continuing without RTC");
+        }
+        shtc3 = new Shtc3Port(*i2cbus);
+        if (!shtc3->IsReady()) {
+            ESP_LOGW(TAG, "SHTC3 unavailable; continuing without temperature sensor");
+        }
+    } else {
+        ESP_LOGW(TAG, "I2C unavailable; continuing without RTC and temperature sensor");
+    }
+    if (!Adc_PortInit()) {
+        ESP_LOGW(TAG, "ADC unavailable; continuing without battery readings");
+    }
     buttons_init();
 }
 
@@ -3646,15 +3659,27 @@ void UserApp_UiInit(void)
     ui_set_default_status_message_locked();
 }
 
-void UserApp_TaskInit(void)
+static bool create_app_task(TaskFunction_t task, const char *name, uint32_t stack_size,
+                            UBaseType_t priority, TaskHandle_t *task_handle, BaseType_t core)
 {
-    xTaskCreatePinnedToCore(clock_task, "clock", 8 * 1024, NULL, 2, NULL, 1);
-    xTaskCreatePinnedToCore(sensor_task, "sensor", 3 * 1024, NULL, 2, NULL, 1);
-    xTaskCreatePinnedToCore(battery_task, "battery", 3 * 1024, NULL, 1, NULL, 1);
-    xTaskCreatePinnedToCore(wifi_monitor_task, "wifi_mon", 6 * 1024, NULL, 2, NULL, 1);
-    xTaskCreatePinnedToCore(mqtt_maintenance_task, "mqtt_maint", 5 * 1024, NULL, 2, NULL, 1);
-    xTaskCreatePinnedToCore(ui_housekeeping_task, "ui_housekeep", 4 * 1024, NULL, 1, NULL, 1);
-    xTaskCreatePinnedToCore(ntp_task, "ntp", 4 * 1024, NULL, 2, &ntp_task_handle, 1);
-    xTaskCreatePinnedToCore(boot_button_task, "boot_btn", 3 * 1024, NULL, 2, NULL, 1);
-    xTaskCreatePinnedToCore(network_startup_task, "net_start", 6 * 1024, NULL, 3, NULL, 1);
+    if (xTaskCreatePinnedToCore(task, name, stack_size, NULL, priority, task_handle, core) != pdPASS) {
+        ESP_LOGE(TAG, "Task creation failed: %s (%u bytes)", name, (unsigned)stack_size);
+        return false;
+    }
+    return true;
+}
+
+bool UserApp_TaskInit(void)
+{
+    bool all_created = true;
+    all_created &= create_app_task(clock_task, "clock", 8 * 1024, 2, NULL, 1);
+    all_created &= create_app_task(sensor_task, "sensor", 3 * 1024, 2, NULL, 1);
+    all_created &= create_app_task(battery_task, "battery", 3 * 1024, 1, NULL, 1);
+    all_created &= create_app_task(wifi_monitor_task, "wifi_mon", 6 * 1024, 2, NULL, 1);
+    all_created &= create_app_task(mqtt_maintenance_task, "mqtt_maint", 5 * 1024, 2, NULL, 1);
+    all_created &= create_app_task(ui_housekeeping_task, "ui_housekeep", 4 * 1024, 1, NULL, 1);
+    all_created &= create_app_task(ntp_task, "ntp", 4 * 1024, 2, &ntp_task_handle, 1);
+    all_created &= create_app_task(boot_button_task, "boot_btn", 3 * 1024, 2, NULL, 1);
+    all_created &= create_app_task(network_startup_task, "net_start", 6 * 1024, 3, NULL, 1);
+    return all_created;
 }

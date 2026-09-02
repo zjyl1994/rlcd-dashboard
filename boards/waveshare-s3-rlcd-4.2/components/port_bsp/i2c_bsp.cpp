@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include "i2c_bsp.h"
 
@@ -16,7 +17,11 @@ I2cMasterBus::I2cMasterBus(int scl_pin,int sda_pin,int i2c_port) {
     i2c_bus_config.sda_io_num                   = (gpio_num_t)sda_pin;
     i2c_bus_config.glitch_ignore_cnt            = 7;
     i2c_bus_config.flags.enable_internal_pullup = true;
-    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_config, &user_i2c_handle));
+    esp_err_t ret = i2c_new_master_bus(&i2c_bus_config, &user_i2c_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE("I2C", "I2C bus init failed: %s", esp_err_to_name(ret));
+        user_i2c_handle = NULL;
+    }
 }
 
 I2cMasterBus::~I2cMasterBus() {
@@ -26,6 +31,9 @@ I2cMasterBus::~I2cMasterBus() {
 int I2cMasterBus::i2c_write_buff(i2c_master_dev_handle_t dev_handle, int reg, uint8_t *buf, uint8_t len) {
     int  ret;
     uint8_t *pbuf = NULL;
+    if (user_i2c_handle == NULL || dev_handle == NULL || (len > 0 && buf == NULL)) {
+        return ESP_ERR_INVALID_ARG;
+    }
     ret           = i2c_master_bus_wait_all_done(user_i2c_handle, i2c_done_pdMS_TICKS);
     if (ret != ESP_OK)
         return ret;
@@ -33,6 +41,9 @@ int I2cMasterBus::i2c_write_buff(i2c_master_dev_handle_t dev_handle, int reg, ui
         ret = i2c_master_transmit(dev_handle, buf, len, i2c_data_pdMS_TICKS);
     } else {
         pbuf    = (uint8_t *) malloc(len + 1);
+        if (pbuf == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
         pbuf[0] = reg;
         for (uint8_t i = 0; i < len; i++) {
             pbuf[i + 1] = buf[i];
@@ -46,6 +57,10 @@ int I2cMasterBus::i2c_write_buff(i2c_master_dev_handle_t dev_handle, int reg, ui
 
 int I2cMasterBus::i2c_master_write_read_dev(i2c_master_dev_handle_t dev_handle, uint8_t *writeBuf, uint8_t writeLen, uint8_t *readBuf, uint8_t readLen) {
     int ret;
+    if (user_i2c_handle == NULL || dev_handle == NULL || (writeLen > 0 && writeBuf == NULL)
+        || (readLen > 0 && readBuf == NULL)) {
+        return ESP_ERR_INVALID_ARG;
+    }
     ret = i2c_master_bus_wait_all_done(user_i2c_handle, i2c_done_pdMS_TICKS);
     if (ret != ESP_OK)
         return ret;
@@ -56,6 +71,9 @@ int I2cMasterBus::i2c_master_write_read_dev(i2c_master_dev_handle_t dev_handle, 
 int I2cMasterBus::i2c_read_buff(i2c_master_dev_handle_t dev_handle, int reg, uint8_t *buf, uint8_t len) {
     int ret;
     uint8_t addr = 0;
+    if (user_i2c_handle == NULL || dev_handle == NULL || (len > 0 && buf == NULL)) {
+        return ESP_ERR_INVALID_ARG;
+    }
     ret          = i2c_master_bus_wait_all_done(user_i2c_handle, i2c_done_pdMS_TICKS);
     if (ret != ESP_OK)
         return ret;
@@ -70,4 +88,8 @@ int I2cMasterBus::i2c_read_buff(i2c_master_dev_handle_t dev_handle, int reg, uin
 
 i2c_master_bus_handle_t I2cMasterBus::Get_I2cBusHandle() {
     return user_i2c_handle;
+}
+
+bool I2cMasterBus::IsReady() const {
+    return user_i2c_handle != NULL;
 }

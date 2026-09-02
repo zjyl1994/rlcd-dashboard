@@ -27,11 +27,13 @@ class DisplayPort {
     int                 rst_;
     int                 width_;
     int                 height_;
+    spi_host_device_t   spihost_;
+    bool                initialized_ = false;
     uint8_t            *DispBuffer = NULL;
-    int                 DisplayLen;
+    int                 DisplayLen = 0;
 #if (AlgorithmOptimization == 3)
-	uint16_t (*PixelIndexLUT)[300];
-	uint8_t  (*PixelBitLUT  )[300];
+	uint16_t (*PixelIndexLUT)[300] = NULL;
+	uint8_t  (*PixelBitLUT  )[300] = NULL;
 	void InitPortraitLUT();
 	void InitLandscapeLUT();
 #endif
@@ -45,6 +47,7 @@ class DisplayPort {
   public:
     DisplayPort(int mosi, int scl, int dc, int cs, int rst, int width, int height, spi_host_device_t spihost = SPI3_HOST);
     ~DisplayPort();
+    bool Init();
     void RLCD_Init();
     void RLCD_ColorClear(uint8_t color);
     void RLCD_Display();

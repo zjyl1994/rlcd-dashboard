@@ -31,7 +31,8 @@ private:
 	const uint8_t  SHTC3_PETP_VOL = 4;
 	const uint8_t Shtc3Address = 0x70;
 	I2cMasterBus& i2cbus_;
-    i2c_master_dev_handle_t I2c_DevShtc3;
+    i2c_master_dev_handle_t I2c_DevShtc3 = NULL;
+    bool ready_ = false;
 
 	etError Shtc3_GetId();
 	etError Shtc3_CheckCrc(uint8_t data[], uint8_t nbrOfBytes,uint8_t checksum);
@@ -42,6 +43,7 @@ private:
 public:
 	Shtc3Port(I2cMasterBus& i2cbus);
 	~Shtc3Port();
+	bool IsReady() const;
 
 	etError Shtc3_Wakeup();
 	etError Shtc3_Sleep();
@@ -62,7 +64,7 @@ typedef struct
   	int week;
 }rtcTimeStruct_t;
 
-void Rtc_Setup(I2cMasterBus *i2cbus,uint8_t dev_addr);
+bool Rtc_Setup(I2cMasterBus *i2cbus,uint8_t dev_addr);
 void Rtc_SetTime(uint16_t year,uint8_t month,uint8_t day,uint8_t hour,uint8_t minute,uint8_t second);
 void Rtc_GetTime(rtcTimeStruct_t *time);
 bool Rtc_SelfCheckAndRecover(void);

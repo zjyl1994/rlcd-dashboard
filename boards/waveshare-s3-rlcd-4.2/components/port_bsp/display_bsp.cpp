@@ -11,19 +11,30 @@ dc_(dc),
 cs_(cs), 
 rst_(rst), 
 width_(width), 
-height_(height) 
+height_(height),
+spihost_(spihost)
 {
+}
+
+bool DisplayPort::Init() {
+    if (initialized_) {
+        return true;
+    }
+
     esp_err_t        ret;
     spi_bus_config_t buscfg   = {};
     int              transfer = width_ * height_;
     buscfg.miso_io_num                   = -1;
-    buscfg.mosi_io_num                   = mosi;
-    buscfg.sclk_io_num                   = scl;
+    buscfg.mosi_io_num                   = mosi_;
+    buscfg.sclk_io_num                   = scl_;
     buscfg.quadwp_io_num                 = -1;
     buscfg.quadhd_io_num                 = -1;
     buscfg.max_transfer_sz               = transfer;
-    ret                                  = spi_bus_initialize(spihost, &buscfg, SPI_DMA_CH_AUTO);
-    ESP_ERROR_CHECK(ret);
+    ret                                  = spi_bus_initialize(spihost_, &buscfg, SPI_DMA_CH_AUTO);
+    if (ret != ESP_OK) {
+        ESP_LOGE("Display", "SPI bus init failed: %s", esp_err_to_name(ret));
+        return false;
+    }
 
     esp_lcd_panel_io_spi_config_t io_config = {};
     io_config.dc_gpio_num = dc_;
@@ -34,7 +45,12 @@ height_(height)
     io_config.spi_mode = 0;
     io_config.trans_queue_depth = 10;
 
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)spihost, &io_config, &io_handle));
+    ret = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)spihost_, &io_config, &io_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE("Display", "LCD panel IO init failed: %s", esp_err_to_name(ret));
+        spi_bus_free(spihost_);
+        return false;
+    }
 
     gpio_config_t gpio_conf = {};
     gpio_conf.intr_type     = GPIO_INTR_DISABLE;
@@ -42,25 +58,51 @@ height_(height)
     gpio_conf.pin_bit_mask  = (0x1ULL << rst_);
     gpio_conf.pull_down_en  = GPIO_PULLDOWN_DISABLE;
     gpio_conf.pull_up_en    = GPIO_PULLUP_ENABLE;
-    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
+    ret = gpio_config(&gpio_conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE("Display", "Reset GPIO init failed: %s", esp_err_to_name(ret));
+        esp_lcd_panel_io_del(io_handle);
+        io_handle = NULL;
+        spi_bus_free(spihost_);
+        return false;
+    }
 
     Set_ResetIOLevel(1);
 
     DisplayLen                = transfer >> 3; //(1byte 8ipex)
     DispBuffer                = (uint8_t *) heap_caps_malloc(DisplayLen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    assert(DispBuffer);
+    if (DispBuffer == NULL) {
+        ESP_LOGE("Display", "Display buffer allocation failed: %d bytes", DisplayLen);
+        esp_lcd_panel_io_del(io_handle);
+        io_handle = NULL;
+        spi_bus_free(spihost_);
+        return false;
+    }
 
 #if (AlgorithmOptimization == 3)
 	PixelIndexLUT = (uint16_t (*)[300])heap_caps_malloc(transfer * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	PixelBitLUT   = (uint8_t (*)[300])heap_caps_malloc(transfer * sizeof(uint8_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    assert(PixelIndexLUT);
-    assert(PixelBitLUT);
+    if (PixelIndexLUT == NULL || PixelBitLUT == NULL) {
+        ESP_LOGE("Display", "Pixel LUT allocation failed");
+        free(PixelIndexLUT);
+        free(PixelBitLUT);
+        PixelIndexLUT = NULL;
+        PixelBitLUT = NULL;
+        free(DispBuffer);
+        DispBuffer = NULL;
+        esp_lcd_panel_io_del(io_handle);
+        io_handle = NULL;
+        spi_bus_free(spihost_);
+        return false;
+    }
     if(width_ == 400) {
         InitLandscapeLUT();
     } else {
         InitPortraitLUT();
     }
 #endif
+    initialized_ = true;
+    return true;
 }
 
 DisplayPort::~DisplayPort() {
@@ -290,15 +332,24 @@ void DisplayPort::RLCD_Reset(void) {
 }
 
 void DisplayPort::RLCD_SendCommand(uint8_t Reg) {
-    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(io_handle, Reg, NULL, 0));
+    esp_err_t ret = esp_lcd_panel_io_tx_param(io_handle, Reg, NULL, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE("Display", "LCD command 0x%02x failed: %s", Reg, esp_err_to_name(ret));
+    }
 }
 
 void DisplayPort::RLCD_SendData(uint8_t Data) {
-    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(io_handle, -1, &Data, 1));
+    esp_err_t ret = esp_lcd_panel_io_tx_param(io_handle, -1, &Data, 1);
+    if (ret != ESP_OK) {
+        ESP_LOGE("Display", "LCD data 0x%02x failed: %s", Data, esp_err_to_name(ret));
+    }
 }
 
 void DisplayPort::RLCD_Sendbuffera(uint8_t *Data, int len) {
-    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(io_handle, -1, Data, len));
+    esp_err_t ret = esp_lcd_panel_io_tx_color(io_handle, -1, Data, len);
+    if (ret != ESP_OK) {
+        ESP_LOGE("Display", "LCD buffer transfer failed: %s", esp_err_to_name(ret));
+    }
 }
 
 void DisplayPort::Set_ResetIOLevel(uint8_t level) {

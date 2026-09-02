@@ -30,14 +30,18 @@ static void Increase_lvgl_tick(void *arg)
 
 bool Lvgl_lock(int timeout_ms)
 {
+    if (lvgl_mux == NULL) {
+        return false;
+    }
     const TickType_t timeout_ticks = (timeout_ms == -1) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
     return xSemaphoreTake(lvgl_mux, timeout_ticks) == pdTRUE;
 }
 
 void Lvgl_unlock(void)
 {
-    assert(lvgl_mux);
-    xSemaphoreGive(lvgl_mux);
+    if (lvgl_mux != NULL) {
+        xSemaphoreGive(lvgl_mux);
+    }
 }
 
 static void Lvgl_port_task(void *arg)
@@ -57,12 +61,20 @@ static void Lvgl_port_task(void *arg)
     }
 }
 
-void Lvgl_PortInit(int width, int height, DispFlushCb flush_cb)
+bool Lvgl_PortInit(int width, int height, DispFlushCb flush_cb)
 {
     lvgl_mux = xSemaphoreCreateMutex();
+    if (lvgl_mux == NULL) {
+        ESP_LOGE(TAG, "LVGL mutex allocation failed");
+        return false;
+    }
     lv_init();
 
     lv_display_t *disp = lv_display_create(width, height);
+    if (disp == NULL) {
+        ESP_LOGE(TAG, "LVGL display allocation failed");
+        return false;
+    }
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_I1);
     lv_display_set_flush_cb(disp, flush_cb);
 
@@ -71,8 +83,12 @@ void Lvgl_PortInit(int width, int height, DispFlushCb flush_cb)
     size_t buffer_size = px_bytes + I1_PALETTE_BYTES;
     uint8_t *buffer_1 = Alloc_lvgl_buf(buffer_size);
     uint8_t *buffer_2 = Alloc_lvgl_buf(buffer_size);
-    assert(buffer_1);
-    assert(buffer_2);
+    if (buffer_1 == NULL || buffer_2 == NULL) {
+        ESP_LOGE(TAG, "LVGL buffer allocation failed (%u bytes)", (unsigned)buffer_size);
+        free(buffer_1);
+        free(buffer_2);
+        return false;
+    }
     memset(buffer_1, 0xFF, buffer_size);
     memset(buffer_2, 0xFF, buffer_size);
 
@@ -84,8 +100,21 @@ void Lvgl_PortInit(int width, int height, DispFlushCb flush_cb)
     lvgl_tick_timer_args.callback = &Increase_lvgl_tick;
     lvgl_tick_timer_args.name = "lvgl_tick";
     esp_timer_handle_t lvgl_tick_timer = NULL;
-    ESP_ERROR_CHECK(esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(lvgl_tick_timer, LVGL_TICK_PERIOD_MS * 1000));
+    esp_err_t timer_err = esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer);
+    if (timer_err != ESP_OK) {
+        ESP_LOGE(TAG, "LVGL tick timer creation failed: %s", esp_err_to_name(timer_err));
+        return false;
+    }
+    timer_err = esp_timer_start_periodic(lvgl_tick_timer, LVGL_TICK_PERIOD_MS * 1000);
+    if (timer_err != ESP_OK) {
+        ESP_LOGE(TAG, "LVGL tick timer start failed: %s", esp_err_to_name(timer_err));
+        esp_timer_delete(lvgl_tick_timer);
+        return false;
+    }
 
-    xTaskCreatePinnedToCore(Lvgl_port_task, "LVGL", 8 * 1024, NULL, 5, NULL, 0);
+    if (xTaskCreatePinnedToCore(Lvgl_port_task, "LVGL", 8 * 1024, NULL, 5, NULL, 0) != pdPASS) {
+        ESP_LOGE(TAG, "LVGL task creation failed");
+        return false;
+    }
+    return true;
 }

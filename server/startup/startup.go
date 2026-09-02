@@ -4,10 +4,12 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/gin-gonic/gin"
@@ -20,13 +22,25 @@ func Start() error {
 		return err
 	}
 
-	if err := connectMqtt(); err != nil {
-		return err
-	}
-
 	router := gin.Default()
 	handler.RegisterRoute(router)
+	go connectMqttLoop()
 	return router.Run(vars.Config.Listen)
+}
+
+func connectMqttLoop() {
+	const retryDelay = 5 * time.Second
+
+	for {
+		client, err := connectMqtt()
+		if err == nil {
+			vars.SetMqtt(client)
+			log.Printf("mqtt connected")
+			return
+		}
+		log.Printf("mqtt unavailable: %v; retrying in %s", err, retryDelay)
+		time.Sleep(retryDelay)
+	}
 }
 
 func loadConfig() error {
@@ -65,15 +79,15 @@ func loadConfig() error {
 	return nil
 }
 
-func connectMqtt() error {
+func connectMqtt() (mqtt.Client, error) {
 	if vars.Config.Mqtt.Host == "" || vars.Config.Mqtt.Port == 0 {
-		return fmt.Errorf("config.mqtt.host/port is empty")
+		return nil, fmt.Errorf("config.mqtt.host/port is empty")
 	}
 
 	scheme := "tcp"
 	if vars.Config.Mqtt.TLS {
 		if vars.Config.Mqtt.Port == 1883 {
-			return fmt.Errorf("config.mqtt.tls=true but port=1883 (usually plaintext). Set mqtt.tls=false or change port to 8883 (or your broker's TLS port)")
+			return nil, fmt.Errorf("config.mqtt.tls=true but port=1883 (usually plaintext). Set mqtt.tls=false or change port to 8883 (or your broker's TLS port)")
 		}
 		scheme = "ssl"
 	}
@@ -85,6 +99,7 @@ func connectMqtt() error {
 	opts.SetUsername(vars.Config.Mqtt.Username)
 	opts.SetPassword(vars.Config.Mqtt.Password)
 	opts.SetAutoReconnect(true)
+	opts.SetConnectTimeout(10 * time.Second)
 
 	if vars.Config.Mqtt.TLS {
 		insecure := false
@@ -107,9 +122,9 @@ func connectMqtt() error {
 	token := client.Connect()
 	token.Wait()
 	if err := token.Error(); err != nil {
-		return fmt.Errorf("mqtt connect failed (%s): %w", brokerURL, err)
+		client.Disconnect(250)
+		return nil, fmt.Errorf("mqtt connect failed (%s): %w", brokerURL, err)
 	}
 
-	vars.Mqtt = client
-	return nil
+	return client, nil
 }

@@ -45,9 +45,16 @@ static void Lvgl_FlushCallback(lv_display_t *drv, const lv_area_t *area, uint8_t
 extern "C" void app_main(void)
 {
     ESP_LOGI(MAIN_TAG, "=== Dashboard starting ===");
+    if (!RlcdPort.Init()) {
+        ESP_LOGE(MAIN_TAG, "Display hardware initialization failed; stopping startup");
+        return;
+    }
     RlcdPort.RLCD_Init();
     ESP_LOGI(MAIN_TAG, "RLCD init done");
-    Lvgl_PortInit(400, 300, Lvgl_FlushCallback);
+    if (!Lvgl_PortInit(400, 300, Lvgl_FlushCallback)) {
+        ESP_LOGE(MAIN_TAG, "LVGL initialization failed; stopping startup");
+        return;
+    }
     ESP_LOGI(MAIN_TAG, "LVGL init done");
     UserApp_AppInit();
     ESP_LOGI(MAIN_TAG, "App init done");
@@ -59,6 +66,8 @@ extern "C" void app_main(void)
         ESP_LOGI(MAIN_TAG, "UI created, main stack free=%u bytes",
             (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
     }
-    UserApp_TaskInit();
+    if (!UserApp_TaskInit()) {
+        ESP_LOGE(MAIN_TAG, "One or more application tasks could not be created");
+    }
     ESP_LOGI(MAIN_TAG, "=== Dashboard running ===");
 }

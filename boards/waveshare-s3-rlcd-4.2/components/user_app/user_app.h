@@ -7,7 +7,7 @@ extern "C" {
 
 void UserApp_AppInit(void);
 void UserApp_UiInit(void);
-void UserApp_TaskInit(void);
+bool UserApp_TaskInit(void);
 
 #ifdef __cplusplus
 }

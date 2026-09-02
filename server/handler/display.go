@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/zjyl1994/rlcd-dashboard/server/vars"
 )
@@ -66,7 +67,8 @@ func agentStatusValues(status AgentStatus) (value int, beep int, timeout int, er
 }
 
 func publishDisplayPayload(payload mqttDisplayPayload) error {
-	if vars.Mqtt == nil || !vars.Mqtt.IsConnected() {
+	client := vars.GetMqtt()
+	if client == nil || !client.IsConnected() {
 		return fmt.Errorf("mqtt not connected")
 	}
 	if vars.Config.Mqtt.Topic == "" {
@@ -81,7 +83,9 @@ func publishDisplayPayload(payload mqttDisplayPayload) error {
 		return fmt.Errorf("mqtt payload is too large: %d bytes, maximum is %d", len(data), mqttPayloadMaxLen)
 	}
 
-	token := vars.Mqtt.Publish(vars.Config.Mqtt.Topic, 0, false, data)
-	token.Wait()
+	token := client.Publish(vars.Config.Mqtt.Topic, 0, false, data)
+	if !token.WaitTimeout(10 * time.Second) {
+		return fmt.Errorf("mqtt publish timeout")
+	}
 	return token.Error()
 }
