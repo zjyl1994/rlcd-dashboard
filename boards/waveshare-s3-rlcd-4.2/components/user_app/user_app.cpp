@@ -46,6 +46,7 @@
 #include "lvgl_bsp.h"
 #include "user_app.h"
 #include "user_config.h"
+#include "storage_flash.h"
 
 #ifndef CONFIG_LONG_PRESS_MS
 #define CONFIG_LONG_PRESS_MS WIFI_PROV_LONG_PRESS_MS
@@ -67,7 +68,6 @@ static constexpr int WIFI_NETWORK_PROBE_RETRY_PERIOD_MS = 500;
 static constexpr uint16_t WIFI_LISTEN_INTERVAL_BEACONS = 20;
 static constexpr size_t MQTT_MESSAGE_MAX_LEN = 4096;
 static constexpr size_t UI_TEXT_MAX_LEN = 4096;
-static constexpr size_t UI_CACHE_MAX_LEN = UI_TEXT_MAX_LEN;
 static constexpr int MQTT_KEEPALIVE_SECONDS = 120;
 static constexpr int MQTT_RECONNECT_TIMEOUT_MS = 10000;
 static constexpr int MQTT_CONNECT_STALL_TIMEOUT_MS = 30000;
@@ -108,6 +108,7 @@ static constexpr int SENSOR_UPDATE_PERIOD_MS = 15000;
 static constexpr int BATTERY_UPDATE_PERIOD_MS = 60000;
 static constexpr int WIFI_MONITOR_CONNECTED_PERIOD_MS = 5000;
 static constexpr int WIFI_MONITOR_DISCONNECTED_PERIOD_MS = 5000;
+static constexpr int STORAGE_RESTORE_DELAY_MS = 500;
 static constexpr EventBits_t WIFI_CONNECTED_BIT = BIT0;
 static constexpr EventBits_t WIFI_CONNECT_FAIL_BIT = BIT1;
 static constexpr EventBits_t WIFI_NETWORK_READY_BIT = BIT2;
@@ -996,55 +997,34 @@ static void audio_request_notification_beep(int beep_type)
     }
 }
 
-static const char *UI_CACHE_NS = "ui_cache";
-
-static void ui_cache_save_text(const char *text)
+static void storage_message_restore_task(void *arg)
 {
-    nvs_handle_t h;
-    if (nvs_open(UI_CACHE_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    if (text != NULL && text[0] != '\0') {
-        nvs_set_str(h, "text_data", text);
+    LV_UNUSED(arg);
+
+    // Let the first UI frame be rendered before touching the storage filesystem.
+    vTaskDelay(pdMS_TO_TICKS(STORAGE_RESTORE_DELAY_MS));
+
+    char text[UI_TEXT_MAX_LEN + 1] = {};
+    struct tm update_time = {};
+    if (!storage_flash_load_last_message(text, sizeof(text), &update_time)) {
+        ESP_LOGI(TAG, "No cached cloud text to restore");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    if (Lvgl_lock(1000)) {
+        dashboard_ui_update_text(text);
+        if (update_time.tm_year > 0) {
+            dashboard_ui_update_text_timestamp(update_time.tm_mon + 1,
+                update_time.tm_mday, update_time.tm_hour,
+                update_time.tm_min, update_time.tm_sec);
+        }
+        Lvgl_unlock();
     } else {
-        nvs_erase_key(h, "text_data");
-    }
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static char *ui_cache_read_string(nvs_handle_t h, const char *key)
-{
-    size_t len = 0;
-
-    if (nvs_get_str(h, key, NULL, &len) != ESP_OK
-        || len <= 1 || len > UI_CACHE_MAX_LEN + 1) {
-        return NULL;
+        ESP_LOGW(TAG, "LVGL busy; cached cloud text was not restored");
     }
 
-    char *buf = (char *)malloc(len);
-    if (buf == NULL) {
-        ESP_LOGW(TAG, "UI cache allocation failed: key=%s bytes=%u",
-            key, (unsigned)len);
-        return NULL;
-    }
-
-    if (nvs_get_str(h, key, buf, &len) != ESP_OK) {
-        free(buf);
-        return NULL;
-    }
-
-    return buf;
-}
-
-static void ui_cache_restore(void)
-{
-    nvs_handle_t h;
-    if (nvs_open(UI_CACHE_NS, NVS_READONLY, &h) != ESP_OK) return;
-    char *buf = ui_cache_read_string(h, "text_data");
-    if (buf != NULL) {
-        dashboard_ui_update_text(buf);
-        free(buf);
-    }
-    nvs_close(h);
+    vTaskDelete(NULL);
 }
 
 static void manual_network_sync_task(void *arg)
@@ -1218,18 +1198,23 @@ static void mqtt_handle_received_message(const char *payload)
     }
 
     if (message.has_text) {
+        struct tm update_time = {};
+        bool has_update_time = false;
         if (Lvgl_lock(-1)) {
             dashboard_ui_update_text(message.text);
             time_t now = time(NULL);
-            struct tm update_time = {};
             if (now != (time_t)-1 && localtime_r(&now, &update_time) != NULL) {
+                has_update_time = true;
                 dashboard_ui_update_text_timestamp(update_time.tm_mon + 1,
                     update_time.tm_mday, update_time.tm_hour,
                     update_time.tm_min, update_time.tm_sec);
             }
             Lvgl_unlock();
         }
-        ui_cache_save_text(message.text);
+        if (!storage_flash_save_last_message(message.text,
+                                             has_update_time ? &update_time : NULL)) {
+            ESP_LOGW(TAG, "Failed to save last cloud text to storage");
+        }
     }
 
     if (message.has_text && message.beep_type != AUDIO_BEEP_TYPE_NONE) {
@@ -3392,6 +3377,9 @@ void UserApp_AppInit(void)
     ESP_LOGI(TAG, "AppInit");
 
     nvs_init();
+    if (!storage_flash_init()) {
+        ESP_LOGW(TAG, "Last-message storage unavailable; continuing without persistence");
+    }
     state_mutex = xSemaphoreCreateMutex();
     assert(state_mutex != NULL);
     wifi_event_group = xEventGroupCreate();
@@ -3428,7 +3416,6 @@ void UserApp_AppInit(void)
 void UserApp_UiInit(void)
 {
     dashboard_ui_init();
-    ui_cache_restore();
 }
 
 static bool create_app_task(TaskFunction_t task, const char *name, uint32_t stack_size,
@@ -3453,5 +3440,6 @@ bool UserApp_TaskInit(void)
     all_created &= create_app_task(ntp_task, "ntp", 4 * 1024, 2, &ntp_task_handle, 1);
     all_created &= create_app_task(boot_button_task, "boot_btn", 3 * 1024, 2, NULL, 1);
     all_created &= create_app_task(network_startup_task, "net_start", 6 * 1024, 3, NULL, 1);
+    all_created &= create_app_task(storage_message_restore_task, "storage_restore", 8 * 1024, 1, NULL, 1);
     return all_created;
 }

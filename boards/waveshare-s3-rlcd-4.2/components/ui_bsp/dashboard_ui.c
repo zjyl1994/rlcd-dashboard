@@ -12,7 +12,7 @@
 
 /* Top area: keep the clock wide and reserve only the space needed by the
  * right-side status row; this is a pixel layout rather than a percentage split. */
-#define RIGHT_COL_X 240
+#define RIGHT_COL_X 233
 #define RIGHT_COL_W (SCREEN_WIDTH - RIGHT_COL_X - 4)
 #define STATUS_LABEL_Y 8
 #define STATUS_LABEL_W (MQTT_BADGE_X - RIGHT_COL_X - 1)
