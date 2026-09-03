@@ -8,17 +8,5 @@
         "username": "",
         "password": "",
         "topic": "/rlcd/{device_name}/message"
-    },
-    "deepseek": {
-        "key": ""
-    },
-    "gold": true,
-    "forex": ["USD", "HKD"],
-    "stocks": ["000001.sh", "399001.sz", "inx.us", "VOO.us"],
-    "schedule": {
-        "start_hour": 6,
-        "end_hour": 22,
-        "day_interval": 5,
-        "night_interval": 15
     }
 }
