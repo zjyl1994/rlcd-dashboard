@@ -1,78 +1,45 @@
 #include "dashboard_ui.h"
 #include "esp_attr.h"
-#include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #define UI_BG_COLOR lv_color_white()
 #define UI_FG_COLOR lv_color_black()
+
 #define SCREEN_WIDTH 400
 #define SCREEN_HEIGHT 300
-#define H_SPLIT_Y 194
-#define V_SPLIT_X 196
 
-/* top-left: clock + date */
-#define CLOCK_X 0
-#define CLOCK_Y 0
-#define CLOCK_W V_SPLIT_X
-#define CLOCK_H H_SPLIT_Y
-#define CLOCK_LABEL_Y 5
-#define DATE_LABEL_Y 78
-#define CLOCK_FONT_SIZE 70
-#define DATE_FONT_SIZE 18
+/* Top area: keep the clock wide and reserve only the space needed by the
+ * right-side status row; this is a pixel layout rather than a percentage split. */
+#define RIGHT_COL_X 240
+#define RIGHT_COL_W (SCREEN_WIDTH - RIGHT_COL_X - 4)
+#define STATUS_LABEL_Y 8
+#define STATUS_LABEL_W (MQTT_BADGE_X - RIGHT_COL_X - 1)
+#define DATE_WEEK_LABEL_Y 27
+#define UPDATE_LABEL_Y 46
+#define STATUS_ICON_Y 8
+#define STATUS_ICON_H 14
 
-/* divider below date in top-left */
-#define TL_DIVIDER_Y 106
-
-/* vertical traffic lights (2 groups, left=light right=label) */
-#define TL_RADIUS 10
-#define TL_DIAM (TL_RADIUS * 2)
-#define TL_GAP 8
-#define TL_Y 112
-#define TL_LABEL_W 52
-#define AGENT_FONT_SIZE 18
-#define AGENT_LABEL_H 20
-#define TL_CIRCLE_X1 12
-#define TL_LABEL_X1 (TL_CIRCLE_X1 + TL_DIAM + 6)
-#define TL_DIV_V_X 98
-#define TL_CIRCLE_X2 (TL_DIV_V_X + 11)
-#define TL_LABEL_X2 (TL_CIRCLE_X2 + TL_DIAM + 6)
-/* 18px uppercase glyphs are 13px high inside a 20px LVGL line. */
-#define TL_LABEL_Y_OFF 1
-
-/* top-right: status area */
-#define STATUS_X (V_SPLIT_X + 1)
-#define STATUS_Y 0
-#define STATUS_W (SCREEN_WIDTH - V_SPLIT_X - 1)
-#define STATUS_H H_SPLIT_Y
-#define TOP_ROW_Y 4
-#define TOP_ICON_Y 4
-#define TOP_ICON_H 14
-#define TEMP_LABEL_X (STATUS_X + 8)
-#define TEMP_LABEL_W 120
-#define MQTT_BADGE_X 329
-#define MQTT_BADGE_Y TOP_ICON_Y
-#define MQTT_BADGE_SZ TOP_ICON_H
-#define WIFI_ICON_X 347
+#define MQTT_BADGE_X 325
+#define MQTT_BADGE_SZ STATUS_ICON_H
+#define WIFI_ICON_X 343
 #define WIFI_BAR_W 4
 #define WIFI_BAR_STEP 5
-#define WIFI_BAR_0_Y (TOP_ICON_Y + 10)
+#define WIFI_BAR_0_Y (STATUS_ICON_Y + 10)
 #define WIFI_BAR_0_H 4
-#define WIFI_BAR_1_Y (TOP_ICON_Y + 7)
+#define WIFI_BAR_1_Y (STATUS_ICON_Y + 7)
 #define WIFI_BAR_1_H 7
-#define WIFI_BAR_2_Y (TOP_ICON_Y + 4)
+#define WIFI_BAR_2_Y (STATUS_ICON_Y + 4)
 #define WIFI_BAR_2_H 10
-#define WIFI_BAR_3_Y (TOP_ICON_Y + 1)
+#define WIFI_BAR_3_Y (STATUS_ICON_Y + 1)
 #define WIFI_BAR_3_H 13
-#define BATTERY_OUTLINE_X 370
-#define BATTERY_OUTLINE_Y TOP_ICON_Y
+#define BATTERY_OUTLINE_X 366
+#define BATTERY_OUTLINE_Y STATUS_ICON_Y
 #define BATTERY_OUTLINE_W 25
-#define BATTERY_OUTLINE_H TOP_ICON_H
+#define BATTERY_OUTLINE_H STATUS_ICON_H
 #define BATTERY_CAP_X (BATTERY_OUTLINE_X + BATTERY_OUTLINE_W)
-#define BATTERY_CAP_Y (TOP_ICON_Y + 4)
+#define BATTERY_CAP_Y (STATUS_ICON_Y + 4)
 #define BATTERY_CAP_W 1
 #define BATTERY_CAP_H 6
 #define BATTERY_PAD 2
@@ -85,79 +52,58 @@
 #define BATTERY_SEG_1_X (BATTERY_SEG_0_X + BATTERY_SEG_W + BATTERY_SEG_GAP)
 #define BATTERY_SEG_2_X (BATTERY_SEG_1_X + BATTERY_SEG_W + BATTERY_SEG_GAP)
 #define BATTERY_SEG_3_X (BATTERY_SEG_2_X + BATTERY_SEG_W + BATTERY_SEG_GAP)
-/* KV display in top-right below icons */
-#define KV_LABEL_X (STATUS_X + 8)
-#define KV_LABEL_Y 26
-#define KV_LABEL_W (STATUS_W - 16)
-#define KV_LABEL_H (H_SPLIT_Y - KV_LABEL_Y - 4)
-#define KV_LABEL_LINE_SPACE 0
-#define KV_LINES_PER_PAGE 6
-#define KV_PAGE_INTERVAL_MS 10000
-#define KV_MAX_LINES 48
-#define KV_MAX_LINE_LEN 80
 
-/* bottom: message area */
-#define MSG_X 8
-#define MSG_Y (H_SPLIT_Y + 6)
-#define MSG_W (SCREEN_WIDTH - 16)
-#define MSG_H (SCREEN_HEIGHT - H_SPLIT_Y - 10)
-#define MSG_CONTENT_Y (H_SPLIT_Y + 6)
-#define MSG_FONT_SIZE 24
-#define INFO_FONT_SIZE 22
-#define MSG_PAGE_INTERVAL_MS 10000
-#define MSG_MAX_LINES 40
-#define MSG_LINES_PER_PAGE 3
+/* The 54 px DSEG HH:MM glyphs occupy about 220 px. Keep a small margin
+ * before the right-side status column instead of tying the layout to a
+ * fixed percentage split. */
+#define CLOCK_LABEL_X 3
+#define CLOCK_LABEL_Y 8
+#define CLOCK_LABEL_W 232
+#define HEADER_BOTTOM_Y 76
 
-static const char *TAG = "dashboard_ui";
+/* Full-width cloud text area. */
+#define TEXT_X 8
+#define TEXT_Y (HEADER_BOTTOM_Y + 1)
+#define TEXT_W (SCREEN_WIDTH - TEXT_X * 2)
+#define TEXT_H (SCREEN_HEIGHT - TEXT_Y - 4)
+#define TEXT_PAGE_INTERVAL_MS 10000
+#define TEXT_LINES_PER_PAGE 8
+#define TEXT_MAX_LINES 160
+#define TEXT_MAX_LINE_BYTES 256
+#define TEXT_PAGE_BUFFER_SIZE 2200
 
 static lv_obj_t *screen_obj;
 static lv_obj_t *main_view;
 static lv_obj_t *prov_view;
 static lv_obj_t *clock_label;
-static lv_obj_t *date_label;
 static lv_obj_t *temp_humi_label;
+static lv_obj_t *date_week_label;
+static lv_obj_t *text_update_label;
 static lv_obj_t *wifi_bars[4];
 static lv_obj_t *wifi_mqtt_badge;
 static lv_obj_t *battery_segments[BATTERY_SEG_COUNT];
-static lv_obj_t *msg_content_label;
-static lv_timer_t *msg_timer = NULL;
-static EXT_RAM_BSS_ATTR char msg_lines[MSG_MAX_LINES][128];
-static int msg_line_count = 0;
-static int msg_page_count = 0;
-static int msg_current_page = 0;
+static lv_obj_t *text_content_label;
+static lv_timer_t *text_timer = NULL;
+static EXT_RAM_BSS_ATTR char text_lines[TEXT_MAX_LINES][TEXT_MAX_LINE_BYTES];
+static int text_line_count = 0;
+static int text_page_count = 0;
+static int text_current_page = 0;
+static bool mqtt_badge_connected = false;
+static int last_clock_hour = -1;
+static int last_clock_minute = -1;
+
 static lv_obj_t *prov_title_label;
 static lv_obj_t *prov_ssid_label;
 static lv_obj_t *prov_ip_label;
 static lv_obj_t *prov_hint_label;
-static const lv_font_t *font_clock = NULL;
-static const lv_font_t *font_msg = NULL;
-static const lv_font_t *font_info = NULL;
-static const lv_font_t *font_date = NULL;
-static const lv_font_t *font_agent = NULL;
-static const lv_font_t *font_ui14 = NULL;
-static lv_obj_t *kv_label;
-static lv_timer_t *kv_timer = NULL;
-static EXT_RAM_BSS_ATTR char kv_lines[KV_MAX_LINES][KV_MAX_LINE_LEN];
-static int kv_line_count = 0;
-static int kv_lines_per_page = 0;
-static int kv_page_count = 0;
-static int kv_current_page = 0;
-static bool mqtt_badge_connected = false;
-static int last_clock_hour = -1;
-static int last_clock_minute = -1;
-static lv_obj_t *tl_circles[2][3];
-static lv_obj_t *tl_labels[2][3];
-static int tl_state[2] = {0, 0};
-static lv_timer_t *tl_blink_timer = NULL;
-static bool tl_blink_on = false;
 
-static void tl_blink_cb(lv_timer_t *t);
+static const lv_font_t *font_clock = NULL;
+static const lv_font_t *font_text = NULL;
+static const lv_font_t *font_ui14 = NULL;
 
 extern const lv_font_t noto_mono_14;
-extern const lv_font_t noto_mono_18;
 extern const lv_font_t noto_mono_22;
-extern const lv_font_t noto_mono_24;
-extern const lv_font_t noto_mono_70;
+extern const lv_font_t noto_dseg_54;
 
 static lv_obj_t *create_box(lv_obj_t *parent, int x, int y, int w, int h, bool outlined)
 {
@@ -174,7 +120,8 @@ static lv_obj_t *create_box(lv_obj_t *parent, int x, int y, int w, int h, bool o
     return obj;
 }
 
-static lv_obj_t *create_label(lv_obj_t *parent, int x, int y, int w, lv_text_align_t align, const lv_font_t *font)
+static lv_obj_t *create_label(lv_obj_t *parent, int x, int y, int w,
+    lv_text_align_t align, const lv_font_t *font)
 {
     lv_obj_t *label = lv_label_create(parent);
     lv_obj_set_pos(label, x, y);
@@ -196,8 +143,7 @@ static void set_box_filled(lv_obj_t *obj, bool filled)
 static void set_wifi_level(bool connected, int level)
 {
     for (int index = 0; index < 4; index++) {
-        bool active = connected && index < level;
-        set_box_filled(wifi_bars[index], active);
+        set_box_filled(wifi_bars[index], connected && index < level);
     }
 }
 
@@ -206,7 +152,8 @@ static void set_battery_level(int level)
     int filled = (level * BATTERY_SEG_COUNT + 99) / 100;
     if (filled > BATTERY_SEG_COUNT) filled = BATTERY_SEG_COUNT;
     for (int i = 0; i < BATTERY_SEG_COUNT; i++) {
-        lv_obj_set_style_bg_color(battery_segments[i], i < filled ? UI_FG_COLOR : UI_BG_COLOR, 0);
+        lv_obj_set_style_bg_color(battery_segments[i],
+            i < filled ? UI_FG_COLOR : UI_BG_COLOR, 0);
     }
 }
 
@@ -254,58 +201,144 @@ static void set_mqtt_level(bool connected)
     }
 }
 
-static lv_obj_t *create_divider_h(lv_obj_t *parent, int x, int y, int w)
+static const char *utf8_next(const char *src, char *glyph, size_t glyph_size)
 {
-    lv_obj_t *line = lv_obj_create(parent);
-    lv_obj_remove_style_all(line);
-    lv_obj_set_pos(line, x, y);
-    lv_obj_set_size(line, w, 1);
-    lv_obj_set_style_bg_color(line, UI_FG_COLOR, 0);
-    lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(line, LV_OBJ_FLAG_SCROLLABLE);
-    return line;
+    unsigned char first = (unsigned char)src[0];
+    size_t length = 1;
+
+    if (first < 0x80) {
+        length = 1;
+    } else if ((first & 0xE0) == 0xC0) {
+        length = 2;
+    } else if ((first & 0xF0) == 0xE0) {
+        length = 3;
+    } else if ((first & 0xF8) == 0xF0) {
+        length = 4;
+    }
+
+    for (size_t i = 1; i < length; i++) {
+        unsigned char next = (unsigned char)src[i];
+        if (next == '\0' || (next & 0xC0) != 0x80) {
+            length = 1;
+            break;
+        }
+    }
+
+    if (length >= glyph_size) length = 1;
+    memcpy(glyph, src, length);
+    glyph[length] = '\0';
+    return src + length;
 }
 
-static lv_obj_t *create_divider_v(lv_obj_t *parent, int x, int y, int h)
+static bool text_line_fits(const char *line, size_t line_length)
 {
-    lv_obj_t *line = lv_obj_create(parent);
-    lv_obj_remove_style_all(line);
-    lv_obj_set_pos(line, x, y);
-    lv_obj_set_size(line, 1, h);
-    lv_obj_set_style_bg_color(line, UI_FG_COLOR, 0);
-    lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(line, LV_OBJ_FLAG_SCROLLABLE);
-    return line;
+    char candidate[TEXT_MAX_LINE_BYTES];
+    lv_point_t size = {0, 0};
+
+    if (line_length >= sizeof(candidate)) return false;
+    memcpy(candidate, line, line_length);
+    candidate[line_length] = '\0';
+    lv_text_get_size(&size, candidate, font_text, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return size.x <= TEXT_W;
+}
+
+static void text_push_line(const char *line, size_t line_length)
+{
+    if (text_line_count >= TEXT_MAX_LINES) return;
+    if (line_length >= TEXT_MAX_LINE_BYTES) line_length = TEXT_MAX_LINE_BYTES - 1;
+    memcpy(text_lines[text_line_count], line, line_length);
+    text_lines[text_line_count][line_length] = '\0';
+    text_line_count++;
+}
+
+/* Wrap by rendered pixel width while preserving explicit newlines and UTF-8 glyphs. */
+static void text_wrap(const char *text)
+{
+    char line[TEXT_MAX_LINE_BYTES];
+    char glyph[8];
+    size_t line_length = 0;
+    const char *cursor = text != NULL ? text : "";
+
+    text_line_count = 0;
+    while (*cursor != '\0' && text_line_count < TEXT_MAX_LINES) {
+        if (*cursor == '\r') {
+            cursor++;
+            continue;
+        }
+        if (*cursor == '\n') {
+            text_push_line(line, line_length);
+            line_length = 0;
+            cursor++;
+            continue;
+        }
+
+        const char *next = utf8_next(cursor, glyph, sizeof(glyph));
+        size_t glyph_length = (size_t)(next - cursor);
+        bool fits = true;
+        if (line_length > 0 && line_length + glyph_length < sizeof(line)) {
+            char candidate[TEXT_MAX_LINE_BYTES];
+            memcpy(candidate, line, line_length);
+            memcpy(candidate + line_length, glyph, glyph_length);
+            fits = text_line_fits(candidate, line_length + glyph_length);
+        }
+        if (line_length + glyph_length >= sizeof(line) || !fits) {
+            text_push_line(line, line_length);
+            line_length = 0;
+        }
+
+        if (glyph_length >= sizeof(line)) {
+            cursor = next;
+            continue;
+        }
+        memcpy(line + line_length, glyph, glyph_length);
+        line_length += glyph_length;
+        line[line_length] = '\0';
+        cursor = next;
+    }
+
+    if (line_length > 0 || text_line_count == 0) {
+        text_push_line(line, line_length);
+    }
+}
+
+static void text_show_page(int page)
+{
+    if (text_content_label == NULL) return;
+    if (text_line_count == 0 || page < 0 || page >= text_page_count) {
+        lv_label_set_text(text_content_label, "");
+        return;
+    }
+
+    int start = page * TEXT_LINES_PER_PAGE;
+    int end = start + TEXT_LINES_PER_PAGE;
+    if (end > text_line_count) end = text_line_count;
+
+    static char buffer[TEXT_PAGE_BUFFER_SIZE];
+    size_t position = 0;
+    for (int i = start; i < end; i++) {
+        if (position > 0 && position < sizeof(buffer) - 1) buffer[position++] = '\n';
+        int written = snprintf(buffer + position, sizeof(buffer) - position,
+            "%s", text_lines[i]);
+        if (written > 0) position += (size_t)written;
+        if (position >= sizeof(buffer) - 1) break;
+    }
+    buffer[sizeof(buffer) - 1] = '\0';
+    lv_label_set_text(text_content_label, buffer);
+}
+
+static void text_timer_cb(lv_timer_t *timer)
+{
+    LV_UNUSED(timer);
+    if (text_page_count <= 1) return;
+    text_current_page = (text_current_page + 1) % text_page_count;
+    text_show_page(text_current_page);
 }
 
 void dashboard_ui_init(void)
 {
-    ESP_LOGI(TAG, "UI init: 1bpp bitmap fonts, main stack free=%u bytes",
-        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_clock = &noto_mono_70;
-    ESP_LOGI(TAG, "UI init: clock font=%s, main stack free=%u bytes",
-        "ok",
-        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_msg = &noto_mono_24;
-    ESP_LOGI(TAG, "UI init: message font=%s, main stack free=%u bytes",
-        "ok",
-        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_info = &noto_mono_22;
-    ESP_LOGI(TAG, "UI init: info font=%s, main stack free=%u bytes",
-        "ok",
-        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_date = &noto_mono_18;
-    ESP_LOGI(TAG, "UI init: date font=%s, main stack free=%u bytes",
-        "ok",
-        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_agent = &noto_mono_18;
-    ESP_LOGI(TAG, "UI init: agent font=%s, main stack free=%u bytes",
-        "ok",
-        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+    font_clock = &noto_dseg_54;
+    font_text = &noto_mono_22;
     font_ui14 = &noto_mono_14;
-    ESP_LOGI(TAG, "UI init: 14px font=%s, main stack free=%u bytes",
-        "ok",
-        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
 
     screen_obj = lv_obj_create(NULL);
     lv_obj_remove_style_all(screen_obj);
@@ -317,278 +350,169 @@ void dashboard_ui_init(void)
     main_view = create_box(screen_obj, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, false);
     prov_view = create_box(screen_obj, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, false);
 
-    /* divider lines (on main_view so hidden during provisioning) */
-    create_divider_h(main_view, 0, H_SPLIT_Y, SCREEN_WIDTH);
-    create_divider_v(main_view, V_SPLIT_X, 0, H_SPLIT_Y);
+    /* ---- fixed status strip ---- */
+    temp_humi_label = create_label(main_view, RIGHT_COL_X, STATUS_LABEL_Y,
+        RIGHT_COL_W, LV_TEXT_ALIGN_LEFT, font_ui14);
+    date_week_label = create_label(main_view, RIGHT_COL_X, DATE_WEEK_LABEL_Y,
+        RIGHT_COL_W, LV_TEXT_ALIGN_LEFT, font_ui14);
+    text_update_label = create_label(main_view, RIGHT_COL_X, UPDATE_LABEL_Y,
+        RIGHT_COL_W, LV_TEXT_ALIGN_LEFT, font_ui14);
 
-    /* ---- top-left: clock + date ---- */
-    clock_label = create_label(main_view, 0, CLOCK_LABEL_Y, CLOCK_W, LV_TEXT_ALIGN_CENTER, font_clock);
-    date_label = create_label(main_view, 0, DATE_LABEL_Y, CLOCK_W, LV_TEXT_ALIGN_CENTER, font_date);
-    lv_label_set_text(clock_label, "--:--");
-    lv_label_set_text(date_label, "----.--.--");
+    wifi_bars[0] = create_box(main_view, WIFI_ICON_X, WIFI_BAR_0_Y,
+        WIFI_BAR_W, WIFI_BAR_0_H, true);
+    wifi_bars[1] = create_box(main_view, WIFI_ICON_X + WIFI_BAR_STEP, WIFI_BAR_1_Y,
+        WIFI_BAR_W, WIFI_BAR_1_H, true);
+    wifi_bars[2] = create_box(main_view, WIFI_ICON_X + WIFI_BAR_STEP * 2, WIFI_BAR_2_Y,
+        WIFI_BAR_W, WIFI_BAR_2_H, true);
+    wifi_bars[3] = create_box(main_view, WIFI_ICON_X + WIFI_BAR_STEP * 3, WIFI_BAR_3_Y,
+        WIFI_BAR_W, WIFI_BAR_3_H, true);
 
-    /* divider below date in top-left quadrant */
-    create_divider_h(main_view, 0, TL_DIVIDER_Y, V_SPLIT_X);
-
-    /* ---- vertical traffic lights (2 groups) ---- */
-    static const char *tl_label_text[3] = {"READY", "WORK", "ERROR"};
-    int tl_cx[2] = {TL_CIRCLE_X1, TL_CIRCLE_X2};
-    int tl_lx[2] = {TL_LABEL_X1, TL_LABEL_X2};
-    for (int g = 0; g < 2; g++) {
-        for (int i = 0; i < 3; i++) {
-            int y = TL_Y + i * (TL_DIAM + TL_GAP);
-            tl_circles[g][i] = create_box(main_view, tl_cx[g], y, TL_DIAM, TL_DIAM, true);
-            lv_obj_set_style_radius(tl_circles[g][i], LV_RADIUS_CIRCLE, 0);
-            set_box_filled(tl_circles[g][i], false);
-            tl_labels[g][i] = create_label(main_view, tl_lx[g], y + TL_LABEL_Y_OFF, TL_LABEL_W, LV_TEXT_ALIGN_LEFT, font_agent);
-            lv_obj_set_height(tl_labels[g][i], AGENT_LABEL_H);
-            lv_label_set_text(tl_labels[g][i], tl_label_text[i]);
-        }
-    }
-    int tl_div_h = TL_DIAM * 3 + TL_GAP * 2;
-    create_divider_v(main_view, TL_DIV_V_X, TL_Y, tl_div_h);
-    tl_blink_timer = lv_timer_create(tl_blink_cb, 500, NULL);
-
-    /* ---- top-right: status ---- */
-    temp_humi_label = create_label(main_view, TEMP_LABEL_X, TOP_ROW_Y, TEMP_LABEL_W, LV_TEXT_ALIGN_LEFT, font_ui14);
-
-    wifi_bars[0] = create_box(main_view, WIFI_ICON_X, WIFI_BAR_0_Y, WIFI_BAR_W, WIFI_BAR_0_H, true);
-    wifi_bars[1] = create_box(main_view, WIFI_ICON_X + WIFI_BAR_STEP, WIFI_BAR_1_Y, WIFI_BAR_W, WIFI_BAR_1_H, true);
-    wifi_bars[2] = create_box(main_view, WIFI_ICON_X + (WIFI_BAR_STEP * 2), WIFI_BAR_2_Y, WIFI_BAR_W, WIFI_BAR_2_H, true);
-    wifi_bars[3] = create_box(main_view, WIFI_ICON_X + (WIFI_BAR_STEP * 3), WIFI_BAR_3_Y, WIFI_BAR_W, WIFI_BAR_3_H, true);
-
-    wifi_mqtt_badge = create_box(main_view, MQTT_BADGE_X, MQTT_BADGE_Y, MQTT_BADGE_SZ, MQTT_BADGE_SZ, false);
+    wifi_mqtt_badge = create_box(main_view, MQTT_BADGE_X, STATUS_ICON_Y,
+        MQTT_BADGE_SZ, MQTT_BADGE_SZ, false);
     lv_obj_set_style_bg_opa(wifi_mqtt_badge, LV_OPA_TRANSP, 0);
     lv_obj_set_style_radius(wifi_mqtt_badge, 1, 0);
-    lv_obj_add_event_cb(wifi_mqtt_badge, mqtt_badge_draw_event_cb, LV_EVENT_DRAW_MAIN, NULL);
+    lv_obj_add_event_cb(wifi_mqtt_badge, mqtt_badge_draw_event_cb,
+        LV_EVENT_DRAW_MAIN, NULL);
 
-    lv_obj_t *battery_outline = create_box(main_view, BATTERY_OUTLINE_X, BATTERY_OUTLINE_Y, BATTERY_OUTLINE_W, BATTERY_OUTLINE_H, true);
-    (void)battery_outline;
-    lv_obj_t *battery_cap = create_box(main_view, BATTERY_CAP_X, BATTERY_CAP_Y, BATTERY_CAP_W, BATTERY_CAP_H, true);
+    lv_obj_t *battery_outline = create_box(main_view, BATTERY_OUTLINE_X,
+        BATTERY_OUTLINE_Y, BATTERY_OUTLINE_W, BATTERY_OUTLINE_H, true);
+    lv_obj_t *battery_cap = create_box(main_view, BATTERY_CAP_X, BATTERY_CAP_Y,
+        BATTERY_CAP_W, BATTERY_CAP_H, true);
     lv_obj_set_style_radius(battery_cap, 1, 0);
-    (void)battery_cap;
-    const int seg_x[BATTERY_SEG_COUNT] = {BATTERY_SEG_0_X, BATTERY_SEG_1_X, BATTERY_SEG_2_X, BATTERY_SEG_3_X};
+    LV_UNUSED(battery_outline);
+    LV_UNUSED(battery_cap);
+    const int segment_x[BATTERY_SEG_COUNT] = {
+        BATTERY_SEG_0_X, BATTERY_SEG_1_X, BATTERY_SEG_2_X, BATTERY_SEG_3_X
+    };
     for (int i = 0; i < BATTERY_SEG_COUNT; i++) {
-        battery_segments[i] = create_box(main_view, seg_x[i], BATTERY_SEG_Y, BATTERY_SEG_W, BATTERY_SEG_H, false);
+        battery_segments[i] = create_box(main_view, segment_x[i], BATTERY_SEG_Y,
+            BATTERY_SEG_W, BATTERY_SEG_H, false);
     }
 
-    kv_label = create_label(main_view, KV_LABEL_X, KV_LABEL_Y, KV_LABEL_W, LV_TEXT_ALIGN_LEFT, font_info);
-    lv_obj_set_height(kv_label, KV_LABEL_H);
-    lv_label_set_long_mode(kv_label, LV_LABEL_LONG_CLIP);
-    lv_obj_set_style_text_line_space(kv_label, KV_LABEL_LINE_SPACE, 0);
+    /* ---- clock hero ---- */
+    clock_label = create_label(main_view, CLOCK_LABEL_X, CLOCK_LABEL_Y,
+        CLOCK_LABEL_W, LV_TEXT_ALIGN_LEFT, font_clock);
+    lv_label_set_text(clock_label, "--:--");
 
-    /* ---- bottom: message ---- */
-    msg_content_label = create_label(main_view, MSG_X, MSG_CONTENT_Y, MSG_W, LV_TEXT_ALIGN_CENTER, font_msg);
-    lv_obj_set_height(msg_content_label, MSG_H);
-    lv_label_set_long_mode(msg_content_label, LV_LABEL_LONG_CLIP);
+    /* ---- unified cloud text view ---- */
+    text_content_label = create_label(main_view, TEXT_X, TEXT_Y, TEXT_W,
+        LV_TEXT_ALIGN_LEFT, font_text);
+    lv_obj_set_height(text_content_label, TEXT_H);
+    lv_label_set_long_mode(text_content_label, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_line_space(text_content_label, 0, 0);
+    text_timer = lv_timer_create(text_timer_cb, TEXT_PAGE_INTERVAL_MS, NULL);
+    lv_timer_pause(text_timer);
 
     /* ---- provisioning ---- */
-    prov_title_label = create_label(prov_view, 40, 42, 320, LV_TEXT_ALIGN_CENTER, font_msg);
-    prov_ssid_label = create_label(prov_view, 24, 104, 352, LV_TEXT_ALIGN_LEFT, font_ui14);
-    prov_ip_label = create_label(prov_view, 24, 138, 352, LV_TEXT_ALIGN_LEFT, font_ui14);
-    prov_hint_label = create_label(prov_view, 24, 188, 352, LV_TEXT_ALIGN_LEFT, font_ui14);
+    prov_title_label = create_label(prov_view, 40, 42, 320,
+        LV_TEXT_ALIGN_CENTER, font_text);
+    prov_ssid_label = create_label(prov_view, 24, 104, 352,
+        LV_TEXT_ALIGN_LEFT, font_ui14);
+    prov_ip_label = create_label(prov_view, 24, 138, 352,
+        LV_TEXT_ALIGN_LEFT, font_ui14);
+    prov_hint_label = create_label(prov_view, 24, 188, 352,
+        LV_TEXT_ALIGN_LEFT, font_ui14);
 
-    lv_label_set_text(temp_humi_label, "--.- °C  -- %");
+    lv_label_set_text(temp_humi_label, "--.-℃ --%RH");
+    lv_label_set_text(date_week_label, "----.--.-- 星期-");
+    lv_label_set_text(text_update_label, "更新 --.-- --:--:--");
     lv_label_set_text(prov_title_label, "Provisioning Mode");
-    lv_label_set_text(prov_hint_label, "Open 192.168.4.1 in browser\nAdd Wi-Fi credentials\nPress KEY or BOOT to exit.");
+    lv_label_set_text(prov_hint_label,
+        "Open 192.168.4.1 in browser\nAdd Wi-Fi credentials\nPress KEY or BOOT to exit.");
+    lv_label_set_text(prov_ssid_label, "AP SSID: --");
+    lv_label_set_text(prov_ip_label, "Address: --");
 
-    lv_label_set_text(msg_content_label, "Waiting for message...");
-
+    dashboard_ui_update_text("");
     dashboard_ui_update_battery(0);
     dashboard_ui_update_wifi_status(false, NULL, 0);
     dashboard_ui_update_mqtt_status(false);
     lv_obj_add_flag(prov_view, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(main_view, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(prov_ssid_label, "AP SSID: --");
-    lv_label_set_text(prov_ip_label, "Address: --");
 }
 
 void dashboard_ui_update_time(int hour, int minute, int second)
 {
-    if (clock_label == NULL) return;
-
-    if (hour != last_clock_hour || minute != last_clock_minute) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%02d:%02d", hour, minute);
-        lv_label_set_text(clock_label, buf);
-        last_clock_hour = hour;
-        last_clock_minute = minute;
-    }
     LV_UNUSED(second);
+    if (clock_label == NULL) return;
+    if (hour == last_clock_hour && minute == last_clock_minute) return;
+
+    char buffer[8];
+    snprintf(buffer, sizeof(buffer), "%02d:%02d", hour, minute);
+    lv_label_set_text(clock_label, buffer);
+    last_clock_hour = hour;
+    last_clock_minute = minute;
+}
+
+void dashboard_ui_update_text_timestamp(int month, int day, int hour, int minute, int second)
+{
+    if (text_update_label == NULL) return;
+
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "更新 %02d-%02d %02d:%02d:%02d",
+        month, day, hour, minute, second);
+    lv_label_set_text(text_update_label, buffer);
 }
 
 void dashboard_ui_update_date(int year, int month, int day, int week)
 {
-    if (date_label == NULL) return;
-    LV_UNUSED(week);
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%04d.%02d.%02d", year, month, day);
-    lv_label_set_text(date_label, buf);
+    static const char *weekday_names[] = {"日", "一", "二", "三", "四", "五", "六"};
+    if (date_week_label == NULL) return;
+
+    const char *weekday = (week >= 0 && week <= 6) ? weekday_names[week] : "-";
+    char buffer[48];
+    snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d 星期%s",
+        year, month, day, weekday);
+    lv_label_set_text(date_week_label, buffer);
 }
 
-static void msg_show_page(int page)
+void dashboard_ui_update_text(const char *text)
 {
-    if (msg_content_label == NULL || msg_line_count == 0) return;
-    if (page < 0 || page >= msg_page_count) {
-        lv_label_set_text(msg_content_label, "");
-        return;
-    }
-    int start = page * MSG_LINES_PER_PAGE;
-    int end = start + MSG_LINES_PER_PAGE;
-    if (end > msg_line_count) end = msg_line_count;
-    static char buf[640];
-    size_t pos = 0;
-    for (int i = start; i < end; i++) {
-        if (pos > 0 && pos < sizeof(buf) - 1) buf[pos++] = '\n';
-        int n = snprintf(buf + pos, sizeof(buf) - pos, "%s", msg_lines[i]);
-        if (n > 0) pos += n;
-        if (pos >= sizeof(buf) - 1) break;
-    }
-    buf[pos] = '\0';
-    lv_label_set_text(msg_content_label, buf);
-    lv_point_t sz = {0, 0};
-    lv_text_get_size(&sz, buf, font_msg, 0, 0, MSG_W, LV_TEXT_FLAG_NONE);
-    int32_t pad = (MSG_H - sz.y) / 2;
-    if (pad < 0) pad = 0;
-    lv_obj_set_style_pad_top(msg_content_label, pad, 0);
-}
+    if (text_content_label == NULL) return;
 
-static void msg_timer_cb(lv_timer_t *timer)
-{
-    LV_UNUSED(timer);
-    if (msg_page_count <= 1) return;
-    msg_current_page = (msg_current_page + 1) % msg_page_count;
-    msg_show_page(msg_current_page);
-}
+    if (text_timer != NULL) lv_timer_pause(text_timer);
+    text_current_page = 0;
+    text_page_count = 0;
+    text_wrap(text);
 
-void dashboard_ui_show_message(const char *title, const char *content)
-{
-    LV_UNUSED(title);
-    if (msg_content_label == NULL) return;
-    if (msg_timer != NULL) lv_timer_pause(msg_timer);
-    msg_line_count = 0;
-    msg_page_count = 0;
-    msg_current_page = 0;
-    const char *text = (content != NULL && content[0] != '\0') ? content : "";
-    const char *p = text;
-    while (*p != '\0' && msg_line_count < MSG_MAX_LINES) {
-        const char *nl = strchr(p, '\n');
-        int len = (nl != NULL) ? (int)(nl - p) : (int)strlen(p);
-        if (len > 127) len = 127;
-        memcpy(msg_lines[msg_line_count], p, len);
-        msg_lines[msg_line_count][len] = '\0';
-        msg_line_count++;
-        if (nl != NULL) p = nl + 1;
-        else break;
-    }
-    if (msg_line_count > 0) {
-        msg_page_count = (msg_line_count + MSG_LINES_PER_PAGE - 1) / MSG_LINES_PER_PAGE;
-        msg_show_page(0);
-        if (msg_page_count > 1) {
-            if (msg_timer == NULL) {
-                msg_timer = lv_timer_create(msg_timer_cb, MSG_PAGE_INTERVAL_MS, NULL);
+    if (text_line_count > 0) {
+        text_page_count = (text_line_count + TEXT_LINES_PER_PAGE - 1)
+            / TEXT_LINES_PER_PAGE;
+        text_show_page(0);
+        if (text_page_count > 1) {
+            if (text_timer == NULL) {
+                text_timer = lv_timer_create(text_timer_cb, TEXT_PAGE_INTERVAL_MS, NULL);
             } else {
-                lv_timer_reset(msg_timer);
+                lv_timer_reset(text_timer);
             }
-            lv_timer_resume(msg_timer);
+            lv_timer_resume(text_timer);
         }
     } else {
-        lv_label_set_text(msg_content_label, "Waiting for message...");
-        lv_point_t sz = {0, 0};
-        lv_text_get_size(&sz, "Waiting for message...", font_msg, 0, 0, MSG_W, LV_TEXT_FLAG_NONE);
-        int32_t pad = (MSG_H - sz.y) / 2;
-        if (pad < 0) pad = 0;
-        lv_obj_set_style_pad_top(msg_content_label, pad, 0);
+        lv_label_set_text(text_content_label, "");
     }
 }
 
-static void kv_show_page(int page)
+void dashboard_ui_next_text_page(void)
 {
-    if (kv_label == NULL || kv_line_count == 0) {
-        if (kv_label) lv_label_set_text(kv_label, "");
-        return;
-    }
-    if (page < 0 || page >= kv_page_count) {
-        lv_label_set_text(kv_label, "");
-        return;
-    }
-    int start = page * kv_lines_per_page;
-    int end = start + kv_lines_per_page;
-    if (end > kv_line_count) end = kv_line_count;
-    static char buf[512];
-    size_t pos = 0;
-    for (int i = start; i < end; i++) {
-        if (pos > 0 && pos < sizeof(buf) - 1) buf[pos++] = '\n';
-        int n = snprintf(buf + pos, sizeof(buf) - pos, "%s", kv_lines[i]);
-        if (n > 0) pos += n;
-        if (pos >= sizeof(buf) - 1) break;
-    }
-    buf[pos] = '\0';
-    lv_label_set_text(kv_label, buf);
-}
+    if (text_content_label == NULL || text_page_count <= 1) return;
 
-static void kv_timer_cb(lv_timer_t *timer)
-{
-    LV_UNUSED(timer);
-    if (kv_page_count <= 1) return;
-    kv_current_page = (kv_current_page + 1) % kv_page_count;
-    kv_show_page(kv_current_page);
-}
-
-void dashboard_ui_update_kv(const char *kv_text)
-{
-    if (kv_label == NULL) return;
-
-    if (kv_timer != NULL) lv_timer_pause(kv_timer);
-    kv_line_count = 0;
-    kv_page_count = 0;
-    kv_current_page = 0;
-
-    if (kv_text == NULL || kv_text[0] == '\0') {
-        lv_label_set_text(kv_label, "");
-        return;
-    }
-
-    const char *p = kv_text;
-    while (*p != '\0' && kv_line_count < KV_MAX_LINES) {
-        const char *nl = strchr(p, '\n');
-        int len = (nl != NULL) ? (int)(nl - p) : (int)strlen(p);
-        if (len > KV_MAX_LINE_LEN - 1) len = KV_MAX_LINE_LEN - 1;
-        memcpy(kv_lines[kv_line_count], p, len);
-        kv_lines[kv_line_count][len] = '\0';
-        kv_line_count++;
-        if (nl != NULL) p = nl + 1;
-        else break;
-    }
-
-    if (kv_line_count > 0) {
-        kv_lines_per_page = KV_LINES_PER_PAGE;
-        kv_page_count = (kv_line_count + kv_lines_per_page - 1) / kv_lines_per_page;
-        kv_show_page(0);
-        if (kv_page_count > 1) {
-            if (kv_timer == NULL) {
-                kv_timer = lv_timer_create(kv_timer_cb, KV_PAGE_INTERVAL_MS, NULL);
-            } else {
-                lv_timer_reset(kv_timer);
-            }
-            lv_timer_resume(kv_timer);
-        }
-    } else {
-        lv_label_set_text(kv_label, "");
-    }
+    text_current_page = (text_current_page + 1) % text_page_count;
+    text_show_page(text_current_page);
+    if (text_timer != NULL) lv_timer_reset(text_timer);
 }
 
 void dashboard_ui_update_temp_humi(float temp, float humi)
 {
     if (temp_humi_label == NULL) return;
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%2.1f °C  %2.0f %%", temp, humi);
-    lv_label_set_text(temp_humi_label, buf);
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%2.1f℃ %2.0f%%RH", temp, humi);
+    lv_label_set_text(temp_humi_label, buffer);
 }
 
 void dashboard_ui_update_wifi_status(bool connected, const char *ssid, int rssi)
 {
+    LV_UNUSED(ssid);
     if (wifi_bars[0] == NULL) return;
+
     int level = 0;
     if (connected) {
         if (rssi >= -55) level = 4;
@@ -599,6 +523,11 @@ void dashboard_ui_update_wifi_status(bool connected, const char *ssid, int rssi)
     set_wifi_level(connected, level);
 }
 
+void dashboard_ui_update_mqtt_status(bool connected)
+{
+    set_mqtt_level(connected);
+}
+
 void dashboard_ui_update_battery(int level)
 {
     if (battery_segments[0] == NULL) return;
@@ -607,35 +536,10 @@ void dashboard_ui_update_battery(int level)
     set_battery_level(level);
 }
 
-void dashboard_ui_update_mqtt_status(bool connected)
-{
-    set_mqtt_level(connected);
-}
-
-static void tl_blink_cb(lv_timer_t *t)
-{
-    LV_UNUSED(t);
-    tl_blink_on = !tl_blink_on;
-    for (int g = 0; g < 2; g++) {
-        if (tl_state[g] == 2) {
-            set_box_filled(tl_circles[g][1], tl_blink_on);
-        }
-    }
-}
-
-void dashboard_ui_update_traffic_light(int group, int state)
-{
-    if (group < 0 || group > 1 || state < 0 || state > 3) return;
-    if (tl_circles[0][0] == NULL) return;
-    tl_state[group] = state;
-    for (int i = 0; i < 3; i++) {
-        set_box_filled(tl_circles[group][i], i == (state - 1));
-    }
-}
-
 void dashboard_ui_set_provisioning(bool active, const char *ap_ssid, const char *ap_ip)
 {
-    if (main_view == NULL || prov_view == NULL || prov_ssid_label == NULL || prov_ip_label == NULL) return;
+    if (main_view == NULL || prov_view == NULL || prov_ssid_label == NULL
+        || prov_ip_label == NULL) return;
 
     if (active) {
         lv_obj_add_flag(main_view, LV_OBJ_FLAG_HIDDEN);
@@ -646,17 +550,17 @@ void dashboard_ui_set_provisioning(bool active, const char *ap_ssid, const char 
     }
 
     if (ap_ssid != NULL) {
-        char buf[96];
-        snprintf(buf, sizeof(buf), "AP SSID: %s", ap_ssid);
-        lv_label_set_text(prov_ssid_label, buf);
+        char buffer[96];
+        snprintf(buffer, sizeof(buffer), "AP SSID: %s", ap_ssid);
+        lv_label_set_text(prov_ssid_label, buffer);
     } else {
         lv_label_set_text(prov_ssid_label, "AP SSID: --");
     }
 
     if (ap_ip != NULL) {
-        char buf[96];
-        snprintf(buf, sizeof(buf), "Address: http://%s", ap_ip);
-        lv_label_set_text(prov_ip_label, buf);
+        char buffer[96];
+        snprintf(buffer, sizeof(buffer), "Address: http://%s", ap_ip);
+        lv_label_set_text(prov_ip_label, buffer);
     } else {
         lv_label_set_text(prov_ip_label, "Address: --");
     }

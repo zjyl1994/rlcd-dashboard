@@ -65,8 +65,6 @@ static constexpr int WIFI_CONNECT_TIMEOUT_MS = 15000;
 static constexpr int WIFI_NETWORK_READY_TIMEOUT_MS = 15000;
 static constexpr int WIFI_NETWORK_PROBE_RETRY_PERIOD_MS = 500;
 static constexpr uint16_t WIFI_LISTEN_INTERVAL_BEACONS = 20;
-static constexpr int STATUS_MESSAGE_TIMEOUT_MS = 10000;
-static constexpr int MQTT_MESSAGE_TIMEOUT_MS = 10000;
 static constexpr size_t MQTT_MESSAGE_MAX_LEN = 4096;
 static constexpr size_t UI_TEXT_MAX_LEN = 4096;
 static constexpr size_t UI_CACHE_MAX_LEN = UI_TEXT_MAX_LEN;
@@ -182,13 +180,10 @@ typedef struct {
 } legacy_device_config_v1_t;
 
 typedef struct {
-    int timeout_seconds;
+    bool has_text;
     int beep_type;
-    int agent1;
-    int agent2;
-    char content[UI_TEXT_MAX_LEN + 1];
-    char kv_data[UI_TEXT_MAX_LEN + 1];
-} mqtt_overlay_message_t;
+    char text[UI_TEXT_MAX_LEN + 1];
+} mqtt_text_message_t;
 
 static I2cMasterBus *i2cbus = NULL;
 static Shtc3Port *shtc3 = NULL;
@@ -221,17 +216,11 @@ static bool boot_button_pressed = false;
 static bool boot_button_long_handled = false;
 static bool key_button_pressed = false;
 static bool key_button_long_handled = false;
-static bool message_overlay_active = false;
-static bool message_overlay_requires_key = false;
-/* ticker state removed */
-static esp_pm_lock_handle_t overlay_input_pm_lock = NULL;
-static bool overlay_input_pm_lock_held = false;
+/* The key still controls network/provisioning actions, but never reads history. */
 static char connected_ssid[33] = {0};
 static int connected_rssi = -127;
 static char provision_ap_ssid[33] = {0};
 static char provision_ap_ip[16] = {0};
-static int64_t status_message_expire_at_us = 0;
-static int64_t message_overlay_expire_at_us = 0;
 static esp_mqtt_client_handle_t mqtt_client = NULL;
 static int64_t mqtt_client_started_at_us = 0;
 static char mqtt_broker_uri[192] = {0};
@@ -249,8 +238,6 @@ static bool audio_beep_in_progress = false;
 static esp_codec_dev_handle_t audio_playback = NULL;
 static int audio_beep_pending_type = AUDIO_BEEP_TYPE_NONE;
 static bool manual_network_sync_in_progress = false;
-static bool last_message_valid = false;
-static mqtt_overlay_message_t last_message = {};
 static bool boot_button_armed = false;
 static bool key_button_armed = false;
 static TickType_t key_button_press_ticks = 0;
@@ -262,8 +249,7 @@ static void wifi_exit_provisioning(bool reconnect_saved);
 static bool wifi_connect_saved_networks(bool enter_provision_on_fail);
 static bool schedule_provisioning_action(bool enter, bool reconnect_saved);
 static void device_config_snapshot(device_config_t *config);
-static void ui_show_message(const char *title, const char *message, int timeout_seconds);
-static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message_t *out_message);
+static bool mqtt_parse_text_message(const char *payload, mqtt_text_message_t *out_message);
 static void mqtt_handle_received_message(const char *payload);
 static embedded_audio_clip_t audio_get_embedded_beep_asset(int asset_id);
 static embedded_audio_clip_t audio_get_embedded_beep(int beep_type);
@@ -272,9 +258,6 @@ static bool audio_write_silence_ms(uint32_t duration_ms);
 static bool audio_init(void);
 static void audio_notification_beep_task(void *arg);
 static void audio_request_notification_beep(int beep_type);
-static void cache_last_message(const mqtt_overlay_message_t *message);
-static bool snapshot_last_message(mqtt_overlay_message_t *message);
-static void recall_last_message_fullscreen(void);
 static uint8_t audio_normalize_sound_mode(uint8_t mode);
 static const char *audio_sound_mode_name(uint8_t mode);
 static int audio_sound_mode_volume(uint8_t mode);
@@ -287,12 +270,9 @@ static void handle_long_key_press(void);
 static void handle_short_boot_press(void);
 static bool ntp_sync_once(void);
 static void ntp_notify_task(void);
-static void ui_set_default_status_message_locked(void);
 static bool sync_system_time_from_rtc(void);
 static void wifi_apply_power_save(bool connected, bool provisioning);
 static void power_management_init(void);
-static void overlay_input_power_lock_set(bool active);
-static void sync_message_input_power_lock(void);
 static int wifi_store_count_snapshot(void);
 static bool wifi_probe_network(void);
 static bool wifi_wait_for_network_ready(int timeout_ms);
@@ -538,42 +518,12 @@ static void power_management_init(void)
 #endif
 
     ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
-    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "overlay_input", &overlay_input_pm_lock));
     ESP_LOGI(TAG, "PM enabled: max=%d MHz min=%d MHz light_sleep=%d production=%d",
              pm_config.max_freq_mhz,
              pm_config.min_freq_mhz,
              pm_config.light_sleep_enable,
              production_build);
 #endif
-}
-
-static void overlay_input_power_lock_set(bool active)
-{
-#if CONFIG_PM_ENABLE
-    if (overlay_input_pm_lock == NULL || overlay_input_pm_lock_held == active) {
-        return;
-    }
-
-    if (active) {
-        ESP_ERROR_CHECK(esp_pm_lock_acquire(overlay_input_pm_lock));
-    } else {
-        ESP_ERROR_CHECK(esp_pm_lock_release(overlay_input_pm_lock));
-    }
-    overlay_input_pm_lock_held = active;
-#else
-    LV_UNUSED(active);
-#endif
-}
-
-static void sync_message_input_power_lock(void)
-{
-    bool should_hold_lock;
-
-    state_lock();
-    should_hold_lock = message_overlay_requires_key;
-    state_unlock();
-
-    overlay_input_power_lock_set(should_hold_lock);
 }
 
 static void adjust_rtc_timezone_offset(int old_offset, int new_offset)
@@ -737,40 +687,11 @@ static void mqtt_request_restart(void)
     state_unlock();
 }
 
-static void ui_set_default_status_message(void)
-{
-    if (Lvgl_lock(-1)) {
-        ui_set_default_status_message_locked();
-        Lvgl_unlock();
-    }
-}
-
-static void ui_set_default_status_message_locked(void)
-{
-    device_config_t config;
-
-    device_config_snapshot(&config);
-    dashboard_ui_show_message(NULL, config.device_name);
-}
-
 static void ui_set_status_message(const char *message)
 {
     if (message != NULL && message[0] != '\0') {
-        if (Lvgl_lock(-1)) {
-            dashboard_ui_show_message(NULL, message);
-            Lvgl_unlock();
-        }
-    } else {
-        ui_set_default_status_message();
+        ESP_LOGI(TAG, "status: %s", message);
     }
-
-    state_lock();
-    if (message != NULL && message[0] != '\0') {
-        status_message_expire_at_us = esp_timer_get_time() + ((int64_t)STATUS_MESSAGE_TIMEOUT_MS * 1000);
-    } else {
-        status_message_expire_at_us = 0;
-    }
-    state_unlock();
 }
 
 static void ui_set_statusf(const char *fmt, ...)
@@ -807,26 +728,6 @@ static void ui_update_mqtt_icon(bool connected)
         dashboard_ui_update_mqtt_status(connected);
         Lvgl_unlock();
     }
-}
-
-static void ui_show_message(const char *title, const char *message, int timeout_seconds)
-{
-    if (Lvgl_lock(-1)) {
-        dashboard_ui_show_message(title, message);
-        Lvgl_unlock();
-    }
-
-    state_lock();
-    message_overlay_active = true;
-    message_overlay_requires_key = (timeout_seconds == 0);
-    if (timeout_seconds > 0) {
-        message_overlay_expire_at_us = esp_timer_get_time() + ((int64_t)timeout_seconds * 1000000LL);
-    } else {
-        message_overlay_expire_at_us = 0;
-    }
-    state_unlock();
-
-    sync_message_input_power_lock();
 }
 
 static embedded_audio_clip_t audio_get_embedded_beep_asset(int asset_id)
@@ -1097,27 +998,14 @@ static void audio_request_notification_beep(int beep_type)
 
 static const char *UI_CACHE_NS = "ui_cache";
 
-static void ui_cache_save_kv(const char *kv)
+static void ui_cache_save_text(const char *text)
 {
     nvs_handle_t h;
     if (nvs_open(UI_CACHE_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    if (kv != NULL && kv[0] != '\0') {
-        nvs_set_str(h, "kv_data", kv);
+    if (text != NULL && text[0] != '\0') {
+        nvs_set_str(h, "text_data", text);
     } else {
-        nvs_erase_key(h, "kv_data");
-    }
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static void ui_cache_save_msg(const char *msg)
-{
-    nvs_handle_t h;
-    if (nvs_open(UI_CACHE_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    if (msg != NULL && msg[0] != '\0') {
-        nvs_set_str(h, "msg_data", msg);
-    } else {
-        nvs_erase_key(h, "msg_data");
+        nvs_erase_key(h, "text_data");
     }
     nvs_commit(h);
     nvs_close(h);
@@ -1151,65 +1039,12 @@ static void ui_cache_restore(void)
 {
     nvs_handle_t h;
     if (nvs_open(UI_CACHE_NS, NVS_READONLY, &h) != ESP_OK) return;
-    char *buf = ui_cache_read_string(h, "kv_data");
+    char *buf = ui_cache_read_string(h, "text_data");
     if (buf != NULL) {
-        dashboard_ui_update_kv(buf);
-        free(buf);
-    }
-    buf = ui_cache_read_string(h, "msg_data");
-    if (buf != NULL) {
-        static mqtt_overlay_message_t m;
-        memset(&m, 0, sizeof(m));
-        strlcpy(m.content, buf, sizeof(m.content));
-        cache_last_message(&m);
-        dashboard_ui_show_message(NULL, buf);
+        dashboard_ui_update_text(buf);
         free(buf);
     }
     nvs_close(h);
-}
-
-static void cache_last_message(const mqtt_overlay_message_t *message)
-{
-    if (message == NULL) {
-        return;
-    }
-
-    state_lock();
-    last_message = *message;
-    last_message_valid = true;
-    state_unlock();
-}
-
-static bool snapshot_last_message(mqtt_overlay_message_t *message)
-{
-    bool valid;
-
-    if (message == NULL) {
-        return false;
-    }
-
-    state_lock();
-    valid = last_message_valid;
-    if (valid) {
-        *message = last_message;
-    }
-    state_unlock();
-
-    return valid;
-}
-
-static void recall_last_message_fullscreen(void)
-{
-    static mqtt_overlay_message_t message;
-
-    memset(&message, 0, sizeof(message));
-
-    if (!snapshot_last_message(&message)) {
-        ui_set_status_message("No cached message");
-        return;
-    }
-
-    ui_show_message(NULL, message.content, 0);
 }
 
 static void manual_network_sync_task(void *arg)
@@ -1262,26 +1097,17 @@ static void request_manual_network_sync(void)
 static void handle_short_key_press(void)
 {
     bool local_provisioning;
-    bool local_overlay_active;
 
     state_lock();
     local_provisioning = prov_active;
-    local_overlay_active = message_overlay_active;
     state_unlock();
 
     if (local_provisioning) {
         ui_set_status_message("Leaving provisioning...");
         schedule_provisioning_action(false, true);
-    } else if (local_overlay_active) {
-        state_lock();
-        message_overlay_active = false;
-        message_overlay_requires_key = false;
-        message_overlay_expire_at_us = 0;
-        state_unlock();
-        sync_message_input_power_lock();
-        ui_set_status_message("");
-    } else {
-        recall_last_message_fullscreen();
+    } else if (Lvgl_lock(100)) {
+        dashboard_ui_next_text_page();
+        Lvgl_unlock();
     }
 }
 
@@ -1329,12 +1155,10 @@ static void handle_short_boot_press(void)
     ui_set_statusf("Sound\n%s", audio_sound_mode_name(next_mode));
 }
 
-static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message_t *out_message)
+static bool mqtt_parse_text_message(const char *payload, mqtt_text_message_t *out_message)
 {
     cJSON *root;
-    cJSON *msg_item;
-    cJSON *info_item;
-    cJSON *timeout_item;
+    cJSON *text_item;
     cJSON *beep_item;
 
     if (payload == NULL || out_message == NULL) {
@@ -1342,10 +1166,8 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
     }
 
     memset(out_message, 0, sizeof(*out_message));
-    out_message->timeout_seconds = MQTT_MESSAGE_TIMEOUT_MS / 1000;
+    out_message->has_text = false;
     out_message->beep_type = AUDIO_BEEP_TYPE_NONE;
-    out_message->agent1 = -1;
-    out_message->agent2 = -1;
 
     root = cJSON_Parse(payload);
     if (root == NULL || !cJSON_IsObject(root)) {
@@ -1353,25 +1175,16 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
         return false;
     }
 
-    msg_item = cJSON_GetObjectItem(root, "message");
-    info_item = cJSON_GetObjectItem(root, "info");
-    timeout_item = cJSON_GetObjectItem(root, "timeout");
+    text_item = cJSON_GetObjectItem(root, "text");
     beep_item = cJSON_GetObjectItem(root, "beep");
 
-    if (msg_item != NULL && cJSON_IsString(msg_item) && msg_item->valuestring != NULL) {
-        strlcpy(out_message->content, msg_item->valuestring, sizeof(out_message->content));
-    }
-
-    if (info_item != NULL && cJSON_IsString(info_item) && info_item->valuestring != NULL) {
-        strlcpy(out_message->kv_data, info_item->valuestring, sizeof(out_message->kv_data));
-    }
-
-    if (timeout_item != NULL) {
-        if (!cJSON_IsNumber(timeout_item) || timeout_item->valueint < 0 || timeout_item->valueint > 180) {
+    if (text_item != NULL && !cJSON_IsNull(text_item)) {
+        if (!cJSON_IsString(text_item) || text_item->valuestring == NULL) {
             cJSON_Delete(root);
             return false;
         }
-        out_message->timeout_seconds = timeout_item->valueint;
+        strlcpy(out_message->text, text_item->valuestring, sizeof(out_message->text));
+        out_message->has_text = true;
     }
 
     if (beep_item != NULL) {
@@ -1389,56 +1202,38 @@ static bool mqtt_parse_overlay_message(const char *payload, mqtt_overlay_message
         }
     }
 
-    cJSON *agent1_item = cJSON_GetObjectItem(root, "agent1");
-    if (agent1_item != NULL && cJSON_IsNumber(agent1_item) && agent1_item->valueint >= 0 && agent1_item->valueint <= 3) {
-        out_message->agent1 = agent1_item->valueint;
-    }
-    cJSON *agent2_item = cJSON_GetObjectItem(root, "agent2");
-    if (agent2_item != NULL && cJSON_IsNumber(agent2_item) && agent2_item->valueint >= 0 && agent2_item->valueint <= 3) {
-        out_message->agent2 = agent2_item->valueint;
-    }
-
     cJSON_Delete(root);
     return true;
 }
 
 static void mqtt_handle_received_message(const char *payload)
 {
-    static mqtt_overlay_message_t message;
+    static mqtt_text_message_t message;
 
     memset(&message, 0, sizeof(message));
 
-    if (!mqtt_parse_overlay_message(payload, &message)) {
+    if (!mqtt_parse_text_message(payload, &message)) {
         ESP_LOGW(TAG, "MQTT payload is not valid JSON: %s", payload != NULL ? payload : "<null>");
-        ui_set_status_message("MQTT JSON parse failed");
         return;
     }
 
-    if (message.kv_data[0] != '\0') {
+    if (message.has_text) {
         if (Lvgl_lock(-1)) {
-            dashboard_ui_update_kv(message.kv_data);
+            dashboard_ui_update_text(message.text);
+            time_t now = time(NULL);
+            struct tm update_time = {};
+            if (now != (time_t)-1 && localtime_r(&now, &update_time) != NULL) {
+                dashboard_ui_update_text_timestamp(update_time.tm_mon + 1,
+                    update_time.tm_mday, update_time.tm_hour,
+                    update_time.tm_min, update_time.tm_sec);
+            }
             Lvgl_unlock();
         }
-        ui_cache_save_kv(message.kv_data);
+        ui_cache_save_text(message.text);
     }
 
-    if (message.content[0] != '\0') {
-        cache_last_message(&message);
-        if (message.beep_type != AUDIO_BEEP_TYPE_NONE) {
-            audio_request_notification_beep(message.beep_type);
-        }
-        ui_show_message(NULL, message.content, message.timeout_seconds);
-        ui_cache_save_msg(message.content);
-    }
-
-    if (Lvgl_lock(-1)) {
-        int agents[2] = {message.agent1, message.agent2};
-        for (int g = 0; g < 2; g++) {
-            if (agents[g] >= 0 && agents[g] <= 3) {
-                dashboard_ui_update_traffic_light(g, agents[g]);
-            }
-        }
-        Lvgl_unlock();
+    if (message.has_text && message.beep_type != AUDIO_BEEP_TYPE_NONE) {
+        audio_request_notification_beep(message.beep_type);
     }
 }
 
@@ -3285,35 +3080,11 @@ static void ui_housekeeping_task(void *arg)
     bool mqtt_icon_initialized = false;
 
     while (1) {
-        bool clear_status = false;
-        bool hide_overlay = false;
         bool local_mqtt_connected = false;
-        int64_t now = esp_timer_get_time();
 
         state_lock();
         local_mqtt_connected = mqtt_connected;
-        if (status_message_expire_at_us > 0 && now >= status_message_expire_at_us) {
-            status_message_expire_at_us = 0;
-            clear_status = true;
-        }
-        if (message_overlay_expire_at_us > 0 && now >= message_overlay_expire_at_us) {
-            message_overlay_expire_at_us = 0;
-            hide_overlay = true;
-        }
         state_unlock();
-
-        if (clear_status) {
-            ui_set_status_message("");
-        }
-
-        if (hide_overlay) {
-            state_lock();
-            message_overlay_active = false;
-            message_overlay_requires_key = false;
-            state_unlock();
-            sync_message_input_power_lock();
-            ui_set_status_message("");
-        }
 
         if (!mqtt_icon_initialized || local_mqtt_connected != last_mqtt_icon_connected) {
             ui_update_mqtt_icon(local_mqtt_connected);
@@ -3359,11 +3130,13 @@ static void clock_task(void *arg)
         if (have_time) {
             if (Lvgl_lock(-1)) {
                 dashboard_ui_update_time(time_info.tm_hour, time_info.tm_min, time_info.tm_sec);
-                if (time_info.tm_year != last_year || time_info.tm_mon != last_month || time_info.tm_mday != last_day) {
+                if (time_info.tm_year != last_year || time_info.tm_mon != last_month
+                    || time_info.tm_mday != last_day) {
                     last_year = time_info.tm_year;
                     last_month = time_info.tm_mon;
                     last_day = time_info.tm_mday;
-                    dashboard_ui_update_date(time_info.tm_year + 1900, time_info.tm_mon + 1, time_info.tm_mday, time_info.tm_wday);
+                    dashboard_ui_update_date(time_info.tm_year + 1900,
+                        time_info.tm_mon + 1, time_info.tm_mday, time_info.tm_wday);
                 }
                 Lvgl_unlock();
             }
@@ -3656,7 +3429,6 @@ void UserApp_UiInit(void)
 {
     dashboard_ui_init();
     ui_cache_restore();
-    ui_set_default_status_message_locked();
 }
 
 static bool create_app_task(TaskFunction_t task, const char *name, uint32_t stack_size,
