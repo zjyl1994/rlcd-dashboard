@@ -20,7 +20,7 @@
 #define CLOCK_Y 0
 #define CLOCK_W V_SPLIT_X
 #define CLOCK_H H_SPLIT_Y
-#define CLOCK_LABEL_Y 0
+#define CLOCK_LABEL_Y (-12)
 #define DATE_LABEL_Y 78
 #define CLOCK_FONT_SIZE 70
 #define DATE_FONT_SIZE 18
@@ -34,12 +34,14 @@
 #define TL_GAP 8
 #define TL_Y 112
 #define TL_LABEL_W 52
+#define AGENT_FONT_SIZE 18
+#define AGENT_LABEL_H 26
 #define TL_CIRCLE_X1 12
 #define TL_LABEL_X1 (TL_CIRCLE_X1 + TL_DIAM + 6)
 #define TL_DIV_V_X 98
 #define TL_CIRCLE_X2 (TL_DIV_V_X + 11)
 #define TL_LABEL_X2 (TL_CIRCLE_X2 + TL_DIAM + 6)
-#define TL_LABEL_Y_OFF ((TL_DIAM - 14) / 2)
+#define TL_LABEL_Y_OFF ((TL_DIAM - AGENT_LABEL_H) / 2)
 
 /* top-right: status area */
 #define STATUS_X (V_SPLIT_X + 1)
@@ -129,6 +131,8 @@ static lv_font_t *font_clock = NULL;
 static lv_font_t *font_msg = NULL;
 static lv_font_t *font_info = NULL;
 static lv_font_t *font_date = NULL;
+static lv_font_t *font_agent = NULL;
+static lv_font_t *font_ui14 = NULL;
 static lv_obj_t *kv_label;
 static lv_timer_t *kv_timer = NULL;
 static EXT_RAM_BSS_ATTR char kv_lines[KV_MAX_LINES][KV_MAX_LINE_LEN];
@@ -147,8 +151,14 @@ static bool tl_blink_on = false;
 
 static void tl_blink_cb(lv_timer_t *t);
 
-extern const uint8_t smiley_ttf_start[] asm("_binary_MiSans_Regular_ttf_start");
-extern const uint8_t smiley_ttf_end[] asm("_binary_MiSans_Regular_ttf_end");
+extern const uint8_t noto_ttf_start[] asm("_binary_NotoSansMonoCJKsc_GBK_ttf_start");
+extern const uint8_t noto_ttf_end[] asm("_binary_NotoSansMonoCJKsc_GBK_ttf_end");
+
+static lv_font_t *create_ui_font(const void *data, size_t data_size, int32_t font_size)
+{
+    return lv_tiny_ttf_create_data_ex(data, data_size, font_size,
+        LV_FONT_KERNING_NONE, LV_TINY_TTF_CACHE_GLYPH_CNT);
+}
 
 static lv_obj_t *create_box(lv_obj_t *parent, int x, int y, int w, int h, bool outlined)
 {
@@ -271,30 +281,34 @@ static lv_obj_t *create_divider_v(lv_obj_t *parent, int x, int y, int h)
 
 void dashboard_ui_init(void)
 {
-    size_t ttf_size = (size_t)(smiley_ttf_end - smiley_ttf_start);
+    size_t ttf_size = (size_t)(noto_ttf_end - noto_ttf_start);
     ESP_LOGI(TAG, "UI init: font data=%u bytes, main stack free=%u bytes",
         (unsigned)ttf_size,
         (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_clock = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, CLOCK_FONT_SIZE);
+    font_clock = create_ui_font(noto_ttf_start, ttf_size, CLOCK_FONT_SIZE);
     ESP_LOGI(TAG, "UI init: clock font=%s, main stack free=%u bytes",
         font_clock != NULL ? "ok" : "fallback",
         (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_msg = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, MSG_FONT_SIZE);
+    font_msg = create_ui_font(noto_ttf_start, ttf_size, MSG_FONT_SIZE);
     ESP_LOGI(TAG, "UI init: message font=%s, main stack free=%u bytes",
         font_msg != NULL ? "ok" : "fallback",
         (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_info = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, INFO_FONT_SIZE);
+    font_info = create_ui_font(noto_ttf_start, ttf_size, INFO_FONT_SIZE);
     ESP_LOGI(TAG, "UI init: info font=%s, main stack free=%u bytes",
         font_info != NULL ? "ok" : "fallback",
         (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_date = lv_tiny_ttf_create_data(smiley_ttf_start, ttf_size, DATE_FONT_SIZE);
+    font_date = create_ui_font(noto_ttf_start, ttf_size, DATE_FONT_SIZE);
     ESP_LOGI(TAG, "UI init: date font=%s, main stack free=%u bytes",
         font_date != NULL ? "ok" : "fallback",
         (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    if (font_clock == NULL) font_clock = (lv_font_t *)&lv_font_montserrat_48;
-    if (font_msg == NULL) font_msg = (lv_font_t *)&lv_font_montserrat_24;
-    if (font_info == NULL) font_info = (lv_font_t *)&lv_font_montserrat_24;
-    if (font_date == NULL) font_date = (lv_font_t *)&lv_font_montserrat_14;
+    font_agent = create_ui_font(noto_ttf_start, ttf_size, AGENT_FONT_SIZE);
+    ESP_LOGI(TAG, "UI init: agent font=%s, main stack free=%u bytes",
+        font_agent != NULL ? "ok" : "fallback",
+        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+    font_ui14 = create_ui_font(noto_ttf_start, ttf_size, 14);
+    ESP_LOGI(TAG, "UI init: 14px font=%s, main stack free=%u bytes",
+        font_ui14 != NULL ? "ok" : "error",
+        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
 
     screen_obj = lv_obj_create(NULL);
     lv_obj_remove_style_all(screen_obj);
@@ -329,8 +343,8 @@ void dashboard_ui_init(void)
             tl_circles[g][i] = create_box(main_view, tl_cx[g], y, TL_DIAM, TL_DIAM, true);
             lv_obj_set_style_radius(tl_circles[g][i], LV_RADIUS_CIRCLE, 0);
             set_box_filled(tl_circles[g][i], false);
-            tl_labels[g][i] = create_label(main_view, tl_lx[g], y + TL_LABEL_Y_OFF, TL_LABEL_W, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
-            lv_obj_set_height(tl_labels[g][i], 14);
+            tl_labels[g][i] = create_label(main_view, tl_lx[g], y + TL_LABEL_Y_OFF, TL_LABEL_W, LV_TEXT_ALIGN_LEFT, font_agent);
+            lv_obj_set_height(tl_labels[g][i], AGENT_LABEL_H);
             lv_label_set_text(tl_labels[g][i], tl_label_text[i]);
         }
     }
@@ -339,7 +353,7 @@ void dashboard_ui_init(void)
     tl_blink_timer = lv_timer_create(tl_blink_cb, 500, NULL);
 
     /* ---- top-right: status ---- */
-    temp_humi_label = create_label(main_view, TEMP_LABEL_X, TOP_ROW_Y, TEMP_LABEL_W, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
+    temp_humi_label = create_label(main_view, TEMP_LABEL_X, TOP_ROW_Y, TEMP_LABEL_W, LV_TEXT_ALIGN_LEFT, font_ui14);
 
     wifi_bars[0] = create_box(main_view, WIFI_ICON_X, WIFI_BAR_0_Y, WIFI_BAR_W, WIFI_BAR_0_H, true);
     wifi_bars[1] = create_box(main_view, WIFI_ICON_X + WIFI_BAR_STEP, WIFI_BAR_1_Y, WIFI_BAR_W, WIFI_BAR_1_H, true);
@@ -372,10 +386,10 @@ void dashboard_ui_init(void)
     lv_label_set_long_mode(msg_content_label, LV_LABEL_LONG_CLIP);
 
     /* ---- provisioning ---- */
-    prov_title_label = create_label(prov_view, 40, 42, 320, LV_TEXT_ALIGN_CENTER, &lv_font_montserrat_24);
-    prov_ssid_label = create_label(prov_view, 24, 104, 352, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
-    prov_ip_label = create_label(prov_view, 24, 138, 352, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
-    prov_hint_label = create_label(prov_view, 24, 188, 352, LV_TEXT_ALIGN_LEFT, &lv_font_montserrat_14);
+    prov_title_label = create_label(prov_view, 40, 42, 320, LV_TEXT_ALIGN_CENTER, font_msg);
+    prov_ssid_label = create_label(prov_view, 24, 104, 352, LV_TEXT_ALIGN_LEFT, font_ui14);
+    prov_ip_label = create_label(prov_view, 24, 138, 352, LV_TEXT_ALIGN_LEFT, font_ui14);
+    prov_hint_label = create_label(prov_view, 24, 188, 352, LV_TEXT_ALIGN_LEFT, font_ui14);
 
     lv_label_set_text(temp_humi_label, "--.- °C  -- %");
     lv_label_set_text(prov_title_label, "Provisioning Mode");
