@@ -1,5 +1,4 @@
 #include "dashboard_ui.h"
-#include "libs/tiny_ttf/lv_tiny_ttf.h"
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -20,7 +19,7 @@
 #define CLOCK_Y 0
 #define CLOCK_W V_SPLIT_X
 #define CLOCK_H H_SPLIT_Y
-#define CLOCK_LABEL_Y (-12)
+#define CLOCK_LABEL_Y 5
 #define DATE_LABEL_Y 78
 #define CLOCK_FONT_SIZE 70
 #define DATE_FONT_SIZE 18
@@ -35,13 +34,14 @@
 #define TL_Y 112
 #define TL_LABEL_W 52
 #define AGENT_FONT_SIZE 18
-#define AGENT_LABEL_H 26
+#define AGENT_LABEL_H 20
 #define TL_CIRCLE_X1 12
 #define TL_LABEL_X1 (TL_CIRCLE_X1 + TL_DIAM + 6)
 #define TL_DIV_V_X 98
 #define TL_CIRCLE_X2 (TL_DIV_V_X + 11)
 #define TL_LABEL_X2 (TL_CIRCLE_X2 + TL_DIAM + 6)
-#define TL_LABEL_Y_OFF ((TL_DIAM - AGENT_LABEL_H) / 2)
+/* 18px uppercase glyphs are 13px high inside a 20px LVGL line. */
+#define TL_LABEL_Y_OFF 1
 
 /* top-right: status area */
 #define STATUS_X (V_SPLIT_X + 1)
@@ -90,6 +90,8 @@
 #define KV_LABEL_Y 26
 #define KV_LABEL_W (STATUS_W - 16)
 #define KV_LABEL_H (H_SPLIT_Y - KV_LABEL_Y - 4)
+#define KV_LABEL_LINE_SPACE 0
+#define KV_LINES_PER_PAGE 6
 #define KV_PAGE_INTERVAL_MS 10000
 #define KV_MAX_LINES 48
 #define KV_MAX_LINE_LEN 80
@@ -127,12 +129,12 @@ static lv_obj_t *prov_title_label;
 static lv_obj_t *prov_ssid_label;
 static lv_obj_t *prov_ip_label;
 static lv_obj_t *prov_hint_label;
-static lv_font_t *font_clock = NULL;
-static lv_font_t *font_msg = NULL;
-static lv_font_t *font_info = NULL;
-static lv_font_t *font_date = NULL;
-static lv_font_t *font_agent = NULL;
-static lv_font_t *font_ui14 = NULL;
+static const lv_font_t *font_clock = NULL;
+static const lv_font_t *font_msg = NULL;
+static const lv_font_t *font_info = NULL;
+static const lv_font_t *font_date = NULL;
+static const lv_font_t *font_agent = NULL;
+static const lv_font_t *font_ui14 = NULL;
 static lv_obj_t *kv_label;
 static lv_timer_t *kv_timer = NULL;
 static EXT_RAM_BSS_ATTR char kv_lines[KV_MAX_LINES][KV_MAX_LINE_LEN];
@@ -151,14 +153,11 @@ static bool tl_blink_on = false;
 
 static void tl_blink_cb(lv_timer_t *t);
 
-extern const uint8_t noto_ttf_start[] asm("_binary_NotoSansMonoCJKsc_GBK_ttf_start");
-extern const uint8_t noto_ttf_end[] asm("_binary_NotoSansMonoCJKsc_GBK_ttf_end");
-
-static lv_font_t *create_ui_font(const void *data, size_t data_size, int32_t font_size)
-{
-    return lv_tiny_ttf_create_data_ex(data, data_size, font_size,
-        LV_FONT_KERNING_NONE, LV_TINY_TTF_CACHE_GLYPH_CNT);
-}
+extern const lv_font_t noto_mono_14;
+extern const lv_font_t noto_mono_18;
+extern const lv_font_t noto_mono_22;
+extern const lv_font_t noto_mono_24;
+extern const lv_font_t noto_mono_70;
 
 static lv_obj_t *create_box(lv_obj_t *parent, int x, int y, int w, int h, bool outlined)
 {
@@ -281,33 +280,31 @@ static lv_obj_t *create_divider_v(lv_obj_t *parent, int x, int y, int h)
 
 void dashboard_ui_init(void)
 {
-    size_t ttf_size = (size_t)(noto_ttf_end - noto_ttf_start);
-    ESP_LOGI(TAG, "UI init: font data=%u bytes, main stack free=%u bytes",
-        (unsigned)ttf_size,
+    ESP_LOGI(TAG, "UI init: 1bpp bitmap fonts, main stack free=%u bytes",
         (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_clock = create_ui_font(noto_ttf_start, ttf_size, CLOCK_FONT_SIZE);
+    font_clock = &noto_mono_70;
     ESP_LOGI(TAG, "UI init: clock font=%s, main stack free=%u bytes",
-        font_clock != NULL ? "ok" : "fallback",
+        "ok",
         (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_msg = create_ui_font(noto_ttf_start, ttf_size, MSG_FONT_SIZE);
+    font_msg = &noto_mono_24;
     ESP_LOGI(TAG, "UI init: message font=%s, main stack free=%u bytes",
-        font_msg != NULL ? "ok" : "fallback",
+        "ok",
         (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_info = create_ui_font(noto_ttf_start, ttf_size, INFO_FONT_SIZE);
+    font_info = &noto_mono_22;
     ESP_LOGI(TAG, "UI init: info font=%s, main stack free=%u bytes",
-        font_info != NULL ? "ok" : "fallback",
+        "ok",
         (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_date = create_ui_font(noto_ttf_start, ttf_size, DATE_FONT_SIZE);
+    font_date = &noto_mono_18;
     ESP_LOGI(TAG, "UI init: date font=%s, main stack free=%u bytes",
-        font_date != NULL ? "ok" : "fallback",
+        "ok",
         (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_agent = create_ui_font(noto_ttf_start, ttf_size, AGENT_FONT_SIZE);
+    font_agent = &noto_mono_18;
     ESP_LOGI(TAG, "UI init: agent font=%s, main stack free=%u bytes",
-        font_agent != NULL ? "ok" : "fallback",
+        "ok",
         (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    font_ui14 = create_ui_font(noto_ttf_start, ttf_size, 14);
+    font_ui14 = &noto_mono_14;
     ESP_LOGI(TAG, "UI init: 14px font=%s, main stack free=%u bytes",
-        font_ui14 != NULL ? "ok" : "error",
+        "ok",
         (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
 
     screen_obj = lv_obj_create(NULL);
@@ -378,7 +375,7 @@ void dashboard_ui_init(void)
     kv_label = create_label(main_view, KV_LABEL_X, KV_LABEL_Y, KV_LABEL_W, LV_TEXT_ALIGN_LEFT, font_info);
     lv_obj_set_height(kv_label, KV_LABEL_H);
     lv_label_set_long_mode(kv_label, LV_LABEL_LONG_CLIP);
-    lv_obj_set_style_text_line_space(kv_label, 2, 0);
+    lv_obj_set_style_text_line_space(kv_label, KV_LABEL_LINE_SPACE, 0);
 
     /* ---- bottom: message ---- */
     msg_content_label = create_label(main_view, MSG_X, MSG_CONTENT_Y, MSG_W, LV_TEXT_ALIGN_CENTER, font_msg);
@@ -565,7 +562,7 @@ void dashboard_ui_update_kv(const char *kv_text)
     }
 
     if (kv_line_count > 0) {
-        kv_lines_per_page = 5;
+        kv_lines_per_page = KV_LINES_PER_PAGE;
         kv_page_count = (kv_line_count + kv_lines_per_page - 1) / kv_lines_per_page;
         kv_show_page(0);
         if (kv_page_count > 1) {
